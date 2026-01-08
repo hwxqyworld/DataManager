@@ -13,6 +13,8 @@
 #include <string>
 #include <iostream>
 
+#define FUSE_USE_VERSION 31
+
 // 全局变量：后端目录路径
 static std::string backend_path;
 
@@ -37,7 +39,7 @@ static int getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
 // 读取目录内容
 static int readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                    off_t offset, struct fuse_file_info *fi,
-                   unsigned int flags) {
+                   enum fuse_readdir_flags flags) {
     (void)offset;
     (void)fi;
     (void)flags;
@@ -55,7 +57,7 @@ static int readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         st.st_ino = de->d_ino;
         st.st_mode = de->d_type << 12;
 
-        if (filler(buf, de->d_name, &st, 0, 0)) {
+        if (filler(buf, de->d_name, &st, 0, FUSE_FILL_DIR_PLUS)) {
             break;
         }
     }
@@ -126,9 +128,9 @@ static int create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 }
 
 // 删除文件
-static int unlink(const char *path) {
+static int dm_unlink(const char *path) {
     std::string real_path = to_backend_path(path);
-    
+
     int res = unlink(real_path.c_str());
     if (res == -1) {
         return -errno;
@@ -137,9 +139,9 @@ static int unlink(const char *path) {
 }
 
 // 创建目录
-static int mkdir(const char *path, mode_t mode) {
+static int dm_mkdir(const char *path, mode_t mode) {
     std::string real_path = to_backend_path(path);
-    
+
     int res = mkdir(real_path.c_str(), mode);
     if (res == -1) {
         return -errno;
@@ -148,9 +150,9 @@ static int mkdir(const char *path, mode_t mode) {
 }
 
 // 删除目录
-static int rmdir(const char *path) {
+static int dm_rmdir(const char *path) {
     std::string real_path = to_backend_path(path);
-    
+
     int res = rmdir(real_path.c_str());
     if (res == -1) {
         return -errno;
@@ -159,13 +161,13 @@ static int rmdir(const char *path) {
 }
 
 // 重命名文件/目录
-static int rename(const char *from, const char *to, unsigned int flags) {
+static int dm_rename(const char *from, const char *to, unsigned int flags) {
     (void)flags; // 简单实现，忽略标志
-    
+
     std::string real_from = to_backend_path(from);
     std::string real_to = to_backend_path(to);
-    
-    int res = rename(real_from.c_str(), real_to.c_str());
+
+    int res = ::rename(real_from.c_str(), real_to.c_str());
     if (res == -1) {
         return -errno;
     }
@@ -173,11 +175,11 @@ static int rename(const char *from, const char *to, unsigned int flags) {
 }
 
 // 修改文件权限
-static int chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+static int dm_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
     (void)fi; // 未使用参数
-    
+
     std::string real_path = to_backend_path(path);
-    
+
     int res = chmod(real_path.c_str(), mode);
     if (res == -1) {
         return -errno;
@@ -186,11 +188,11 @@ static int chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
 }
 
 // 修改文件所有者
-static int chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
+static int dm_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
     (void)fi; // 未使用参数
-    
+
     std::string real_path = to_backend_path(path);
-    
+
     int res = lchown(real_path.c_str(), uid, gid);
     if (res == -1) {
         return -errno;
@@ -199,9 +201,9 @@ static int chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *
 }
 
 // 截断文件
-static int truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+static int dm_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
     std::string real_path = to_backend_path(path);
-    
+
     int res;
     if (fi != NULL) {
         int fd = (int)fi->fh;
@@ -209,7 +211,7 @@ static int truncate(const char *path, off_t size, struct fuse_file_info *fi) {
     } else {
         res = truncate(real_path.c_str(), size);
     }
-    
+
     if (res == -1) {
         return -errno;
     }
@@ -225,13 +227,13 @@ static struct fuse_operations simple_oper = {
     .write      = write,
     .release    = release,
     .create     = create,
-    .unlink     = unlink,
-    .mkdir      = mkdir,
-    .rmdir      = rmdir,
-    .rename     = rename,
-    .chmod      = chmod,
-    .chown      = chown,
-    .truncate   = truncate,
+    .unlink     = dm_unlink,
+    .mkdir      = dm_mkdir,
+    .rmdir      = dm_rmdir,
+    .rename     = dm_rename,
+    .chmod      = dm_chmod,
+    .chown      = dm_chown,
+    .truncate   = dm_truncate,
 };
 
 int main(int argc, char *argv[]) {
