@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - 简单 FUSE 文件系统构建脚本
+# build.sh - FUSE3 文件系统构建脚本
 
 set -e  # 遇到错误时退出
 
@@ -36,12 +36,16 @@ fi
 # 检查 FUSE3
 if pkg-config --exists fuse3; then
     echo "✓ 找到 FUSE3 库"
+    FUSE_CFLAGS=$(pkg-config --cflags fuse3)
+    FUSE_LIBS=$(pkg-config --libs fuse3)
 else
     echo -e "${RED}警告: 未找到 FUSE3 开发文件${NC}"
     echo "在 Ubuntu/Debian 上: sudo apt install libfuse3-dev"
     echo "在 Fedora/RHEL 上: sudo dnf install fuse3-devel"
     echo "在 Arch 上: sudo pacman -S fuse3"
     echo "继续构建，但可能会失败..."
+    FUSE_CFLAGS=""
+    FUSE_LIBS="-lfuse3"
 fi
 
 # 显示构建选项
@@ -61,19 +65,19 @@ read -p "选择选项 [1-8]: " choice
 case $choice in
     1)
         echo -e "${GREEN}执行标准构建...${NC}"
-        make
+        $CXX $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
         ;;
     2)
         echo -e "${GREEN}执行调试构建...${NC}"
-        make debug
+        $CXX $FUSE_CFLAGS -g -O0 main.cpp -o datamanager $FUSE_LIBS
         ;;
     3)
         echo -e "${GREEN}执行发布构建...${NC}"
-        make release
+        $CXX $FUSE_CFLAGS -O3 main.cpp -o datamanager $FUSE_LIBS
         ;;
     4)
         echo -e "${GREEN}使用 clang 构建...${NC}"
-        make clang
+        clang++ $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
         ;;
     5)
         echo -e "${GREEN}使用 musl 静态构建...${NC}"
@@ -83,15 +87,16 @@ case $choice in
             echo "在 Ubuntu/Debian 上: sudo apt install musl-tools"
             exit 1
         fi
-        make musl
+        musl-g++ $FUSE_CFLAGS -static -O2 main.cpp -o datamanager $FUSE_LIBS
         ;;
     6)
         echo -e "${GREEN}清理构建文件...${NC}"
-        make clean
+        rm -f datamanager
         ;;
     7)
         echo -e "${GREEN}检查依赖...${NC}"
-        make check-deps
+        echo "g++ 或 clang++: $CXX"
+        echo "FUSE3: $(pkg-config --modversion fuse3 2>/dev/null || echo '未找到')"
         ;;
     8)
         echo "退出"
@@ -99,7 +104,7 @@ case $choice in
         ;;
     *)
         echo -e "${YELLOW}无效选择，使用标准构建${NC}"
-        make
+        $CXX $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
         ;;
 esac
 

@@ -2,7 +2,7 @@
 // 编译: make
 // 运行: ./datamanager /backend /mnt/test
 
-#include <fuse.h>
+#include <fuse3/fuse.h>
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -36,30 +36,30 @@ static int getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
 
 // 读取目录内容
 static int readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                         off_t offset, struct fuse_file_info *fi,
-                         enum fuse_readdir_flags flags) {
+                   off_t offset, struct fuse_file_info *fi,
+                   unsigned int flags) {
     (void)offset;
     (void)fi;
     (void)flags;
-    
+
     std::string real_path = to_backend_path(path);
     DIR *dp = opendir(real_path.c_str());
     if (dp == NULL) {
         return -errno;
     }
-    
+
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
         struct stat st;
         memset(&st, 0, sizeof(st));
         st.st_ino = de->d_ino;
         st.st_mode = de->d_type << 12;
-        
-        if (filler(buf, de->d_name, &st, 0, (fuse_fill_dir_flags)0)) {
+
+        if (filler(buf, de->d_name, &st, 0, 0)) {
             break;
         }
     }
-    
+
     closedir(dp);
     return 0;
 }
@@ -241,38 +241,31 @@ int main(int argc, char *argv[]) {
         std::cerr << "示例: " << argv[0] << " /backend /mnt/test -f -s\n";
         return 1;
     }
-    
-    // 保存后端目录路径
+
     backend_path = argv[1];
-    
-    // 确保后端目录以 '/' 结尾
     if (backend_path.back() != '/') {
         backend_path += '/';
     }
-    
-    // 检查后端目录是否存在
+
     struct stat st;
     if (stat(backend_path.c_str(), &st) == -1) {
         std::cerr << "错误: 后端目录 '" << backend_path << "' 不存在\n";
         return 1;
     }
-    
-    // 准备 FUSE 参数（移除后端目录参数）
+
+    // fuse3 推荐直接传递 argv/argc
+    std::cout << "启动简单 FUSE 文件系统\n";
+    std::cout << "后端目录: " << backend_path << "\n";
+    std::cout << "挂载点: " << argv[2] << "\n";
+
+    // 跳过 argv[1] (后端目录)，构造新的参数数组
     char *fuse_argv[argc];
     fuse_argv[0] = argv[0];
-    fuse_argv[1] = argv[2]; // 挂载点
-    
-    // 复制剩余的 FUSE 选项
+    fuse_argv[1] = argv[2];
     for (int i = 3; i < argc; i++) {
         fuse_argv[i-1] = argv[i];
     }
-    
     int fuse_argc = argc - 1;
-    
-    std::cout << "启动简单 FUSE 文件系统\n";
-    std::cout << "后端目录: " << backend_path << "\n";
-    std::cout << "挂载点: " << fuse_argv[1] << "\n";
-    
-    // 启动 FUSE
+
     return fuse_main(fuse_argc, fuse_argv, &simple_oper, NULL);
 }
