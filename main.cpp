@@ -2,6 +2,7 @@
 // 编译: make
 // 运行: ./datamanager /backend /mnt/test
 
+#define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
 #include <cstdio>
 #include <cstring>
@@ -12,8 +13,6 @@
 #include <dirent.h>
 #include <string>
 #include <iostream>
-
-#define FUSE_USE_VERSION 31
 
 // 全局变量：后端目录路径
 static std::string backend_path;
@@ -222,9 +221,9 @@ static int dm_truncate(const char *path, off_t size, struct fuse_file_info *fi) 
 static struct fuse_operations simple_oper = {
     .getattr    = getattr,
     .readdir    = readdir,
-    .open       = open,
     .read       = read,
     .write      = write,
+    .open       = open,
     .release    = release,
     .create     = create,
     .unlink     = dm_unlink,
