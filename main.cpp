@@ -185,7 +185,14 @@ int main(int argc, char *argv[])
     auto raid = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
     g_fm = std::make_shared<FileManager>(raid);
 
-    struct fuse_args args = FUSE_ARGS_INIT(argc - 1, argv); // 跳过程序名，只给 FUSE 传 mountpoint 等
+    // 构造新的参数列表，去掉挂载点和目录参数，只保留其余参数传递给 FUSE
+    std::vector<char*> fuse_args_vec;
+    fuse_args_vec.push_back(argv[0]);
+    for (int i = 7; i < argc; ++i) {
+        fuse_args_vec.push_back(argv[i]);
+    }
+    int fuse_argc = static_cast<int>(fuse_args_vec.size());
+    struct fuse_args args = FUSE_ARGS_INIT(fuse_argc, fuse_args_vec.data());
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
     fuse_opt_free_args(&args);
 
