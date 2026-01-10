@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 #include <sys/stat.h>
 
 static std::shared_ptr<FileManager> g_fm;
@@ -186,7 +187,7 @@ int main(int argc, char *argv[])
     g_fm = std::make_shared<FileManager>(raid);
 
     // 调整参数，传递给 FUSE
-    vector<char*> fuse_argv;
+    std::vector<char*> fuse_argv;
     fuse_argv.push_back(argv[0]);
     fuse_argv.push_back((char*)mountpoint);
     for (int i = 7; i < argc; i++) {
