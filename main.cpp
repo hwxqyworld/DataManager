@@ -165,15 +165,18 @@ static const struct fuse_operations raidfs_ops = {
 
 int main(int argc, char *argv[])
 {
+    // ./cloudraidfs <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4> [FUSE options...]
+
     if (argc < 7) {
         fprintf(stderr,
-                "用法: %s <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4>\n",
+                "用法: %s <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4> [FUSE options]\n",
                 argv[0]);
         return 1;
     }
 
     const char *mountpoint = argv[1];
 
+    // 解析 RAID 后端目录
     std::vector<std::shared_ptr<ChunkStore>> backends;
     for (int i = 2; i < 7; i++) {
         backends.push_back(std::make_shared<LocalChunkStore>(argv[i]));
@@ -182,20 +185,31 @@ int main(int argc, char *argv[])
     int k = 4;
     int m = 1;
 
-    std::shared_ptr<ErasureCoder> coder = std::make_shared<RSCoder>();
+    auto coder = std::make_shared<RSCoder>();
     auto raid = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
     g_fm = std::make_shared<FileManager>(raid);
 
-    // 调整参数，传递给 FUSE
+    // 构造 FUSE 参数：progname, mountpoint, 其余 FUSE options
     std::vector<char*> fuse_argv;
-    fuse_argv.push_back(argv[0]);
-    fuse_argv.push_back((char*)mountpoint);
+    fuse_argv.push_back(argv[0]);       // 程序名
+    fuse_argv.push_back(argv[1]);       // 挂载点
+
+    // 其余参数（从 argv[7] 开始）是 FUSE options
     for (int i = 7; i < argc; i++) {
         fuse_argv.push_back(argv[i]);
     }
-    struct fuse_args args = FUSE_ARGS_INIT(fuse_argv.size(), fuse_argv.data());
+
+    struct fuse_args args = FUSE_ARGS_INIT(
+        (int)fuse_argv.size(),
+        fuse_argv.data()
+    );
+
+    // 让 FUSE 解析 mountpoint 和选项
+    fuse_opt_parse(&args, NULL, NULL, NULL);
+
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
     fuse_opt_free_args(&args);
 
     return ret;
 }
+
