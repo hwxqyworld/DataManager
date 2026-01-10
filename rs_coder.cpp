@@ -114,7 +114,7 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         return false;
     }
 
-    // chunk0 里应该有长度头部，优先从这里取
+    // 从 chunk0 读取原始长度
     uint64_t orig_size = 0;
     if (chunks[0].size() >= sizeof(orig_size)) {
         std::memcpy(&orig_size, chunks[0].data(), sizeof(orig_size));
@@ -123,7 +123,7 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         return false;
     }
 
-    // 收集有效 chunk 的索引（包括数据块和校验块），最多 k 个
+    // 收集最多 k 个有效 chunk 的索引
     std::vector<int> valid;
     valid.reserve(k);
     for (int i = 0; i < k + m; i++) {
@@ -132,20 +132,16 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
             if ((int)valid.size() == k) break;
         }
     }
-
     if ((int)valid.size() < k) {
         fprintf(stderr, "RSCoder: 有效 chunk 不足 k，无法恢复\n");
         return false;
     }
 
-    // 每个 chunk 的有效负载长度：
-    // 对于包含长度头的 chunk0，要扣掉 8 字节
+    // 计算有效负载 chunk_size
     size_t chunk_size = 0;
     {
-        // 找到第一个有效 chunk 的数据长度
         int idx0 = valid[0];
         size_t len0 = chunks[idx0].size();
-
         if (idx0 == 0) {
             if (len0 < sizeof(orig_size)) {
                 fprintf(stderr, "RSCoder::decode: chunk0 长度不足\n");
@@ -157,13 +153,13 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         }
     }
 
-    // 构造 k×k 的子矩阵（取 valid 对应的行）
-    std::vector<std::vector<uint8_t>> mat(k, std::vector<uint8_t>(k));
+    // 基矩阵（不会被修改）
+    std::vector<std::vector<uint8_t>> base_mat(k, std::vector<uint8_t>(k));
     for (int r = 0; r < k; r++) {
         uint8_t x = (uint8_t)(valid[r] + 1);
         uint8_t v = 1;
         for (int c = 0; c < k; c++) {
-            mat[r][c] = v;
+            base_mat[r][c] = v;
             v = gf_mul(v, x);
         }
     }
@@ -181,7 +177,6 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
 
             size_t offset;
             if (idx == 0) {
-                // 跳过长度头
                 if (chunk.size() < sizeof(orig_size) + b + 1) {
                     fprintf(stderr, "RSCoder::decode: chunk0 数据长度不足\n");
                     return false;
@@ -198,20 +193,20 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
             vec[r] = (uint8_t)chunk[offset];
         }
 
-        // 求解线性方程组
+        // 每个字节要用一份矩阵拷贝做高斯消元
+        std::vector<std::vector<uint8_t>> mat = base_mat;
         std::vector<uint8_t> sol(k);
         if (!solve_matrix(mat, vec, sol)) {
-            fprintf(stderr, "RSCoder: 高斯消元失败\n");
+            fprintf(stderr, "RSCoder: 高斯消元失败 (b=%zu)\n", b);
             return false;
         }
 
-        // 把解写回到 out_data 中：第 i 个数据块的第 b 个字节
         for (int i = 0; i < k; i++) {
             out_data[(size_t)i * chunk_size + b] = (char)sol[i];
         }
     }
 
-    // 按原始长度截断（去掉 padding）
+    // 按原始长度截断
     if ((uint64_t)out_data.size() < orig_size) {
         fprintf(stderr, "RSCoder::decode: 解码结果长度不足 orig_size\n");
         return false;
