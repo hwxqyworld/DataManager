@@ -2,10 +2,12 @@
 #include <fuse3/fuse.h>
 
 #include "local_chunk_store.h"
+#include "webdav_chunk_store.h"
 #include "raid_chunk_store.h"
 #include "rs_coder.h"
 #include "file_manager.h"
 #include "metadata_manager.h"
+#include "yml_parser.h"
 
 #include <memory>
 #include <vector>
@@ -13,7 +15,6 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
-#include <sys/stat.h>
 
 static std::shared_ptr<FileManager> g_fm;
 static std::shared_ptr<MetadataManager> g_meta;
@@ -42,7 +43,6 @@ static int raidfs_getattr(const char *path, struct stat *stbuf,
         return 0;
     }
 
-    // 目录判断：如果 Trie 中存在该前缀，则视为目录
     auto children = g_meta->list_dir(p);
     if (!children.empty()) {
         stbuf->st_mode = S_IFDIR | 0755;
@@ -182,13 +182,13 @@ static int raidfs_truncate(const char *path, off_t size,
 // ------------------------------------------------------------
 static struct fuse_operations raidfs_ops = {};
 static void init_ops() {
-    raidfs_ops.getattr    = raidfs_getattr,
-    raidfs_ops.readdir    = raidfs_readdir,
-    raidfs_ops.create     = raidfs_create,
-    raidfs_ops.unlink     = raidfs_unlink,
-    raidfs_ops.truncate   = raidfs_truncate,
-    raidfs_ops.open       = raidfs_open,
-    raidfs_ops.read       = raidfs_read,
+    raidfs_ops.getattr    = raidfs_getattr;
+    raidfs_ops.readdir    = raidfs_readdir;
+    raidfs_ops.create     = raidfs_create;
+    raidfs_ops.unlink     = raidfs_unlink;
+    raidfs_ops.truncate   = raidfs_truncate;
+    raidfs_ops.open       = raidfs_open;
+    raidfs_ops.read       = raidfs_read;
     raidfs_ops.write      = raidfs_write;
 }
 
@@ -199,39 +199,77 @@ int main(int argc, char *argv[])
 {
     init_ops();
 
-    // ./cloudraidfs <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4> [FUSE options...]
-
-    if (argc < 7) {
-        fprintf(stderr,
-                "用法: %s <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4> [FUSE options]\n",
-                argv[0]);
+    if (argc < 2) {
+        fprintf(stderr, "用法: %s <config.yml> [FUSE options]\n", argv[0]);
         return 1;
     }
 
-    const char *mountpoint = argv[1];
-
-    // 初始化 RAID 后端
-    std::vector<std::shared_ptr<ChunkStore>> backends;
-    for (int i = 2; i < 7; i++) {
-        backends.push_back(std::make_shared<LocalChunkStore>(argv[i]));
+    // ------------------------------------------------------------
+    // 读取 config.yml
+    // ------------------------------------------------------------
+    YmlParser parser;
+    if (!parser.load_file(argv[1])) {
+        fprintf(stderr, "无法读取配置文件: %s\n", argv[1]);
+        return 1;
     }
 
-    int k = 4;
-    int m = 1;
+    const YmlNode &root = parser.root();
 
+    // mountpoint
+    std::string mountpoint = root.map.at("mountpoint").value;
+
+    // k, m
+    int k = std::stoi(root.map.at("k").value);
+    int m = std::stoi(root.map.at("m").value);
+
+    // backends
+    std::vector<std::shared_ptr<ChunkStore>> backends;
+
+    // 重新解析 backends（map 列表）
+    const auto &backend_map = root.map.at("backends").map;
+    for (const auto &kv : backend_map) {
+        const YmlNode &node = kv.second;
+
+        std::string type = node.map.at("type").value;
+
+        if (type == "local") {
+            std::string path = node.map.at("path").value;
+            backends.push_back(std::make_shared<LocalChunkStore>(path));
+        }
+        else if (type == "webdav") {
+            std::string url = node.map.at("url").value;
+            std::string user = node.map.count("username") ? node.map.at("username").value : "";
+            std::string pass = node.map.count("password") ? node.map.at("password").value : "";
+            backends.push_back(std::make_shared<WebDavChunkStore>(url, user, pass));
+        }
+        else {
+            fprintf(stderr, "未知后端类型: %s\n", type.c_str());
+            return 1;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 构建 RAID 层
+    // ------------------------------------------------------------
     auto coder = std::make_shared<RSCoder>();
     auto raid = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
 
+    // ------------------------------------------------------------
     // 初始化元数据与文件管理器
+    // ------------------------------------------------------------
     g_meta = std::make_shared<MetadataManager>();
-    g_fm   = std::make_shared<FileManager>(raid, g_meta);
+    g_meta->load("metadata.json");
 
+    g_fm = std::make_shared<FileManager>(raid, g_meta);
+
+    // ------------------------------------------------------------
     // 构造 FUSE 参数
+    // ------------------------------------------------------------
     std::vector<char*> fuse_argv;
     fuse_argv.push_back(argv[0]);
-    fuse_argv.push_back(argv[1]);
+    fuse_argv.push_back((char*)mountpoint.c_str());
 
-    for (int i = 7; i < argc; i++) {
+    for (int i = 2; i < argc; i++) {
         fuse_argv.push_back(argv[i]);
     }
 
@@ -243,6 +281,8 @@ int main(int argc, char *argv[])
     fuse_opt_parse(&args, NULL, NULL, NULL);
 
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
+
+    g_meta->save("metadata.json");
     fuse_opt_free_args(&args);
 
     return ret;

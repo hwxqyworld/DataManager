@@ -6,7 +6,7 @@
 # ===========================
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -g
-LDFLAGS ?= $(shell pkg-config --libs fuse3 2>/dev/null || echo "-lfuse3")
+LDFLAGS ?= $(shell pkg-config --libs fuse3 2>/dev/null || echo "-lfuse3") -lneon
 
 # ===========================
 # 源码与目标

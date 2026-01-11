@@ -16,6 +16,9 @@ struct FileMeta {
 class MetadataManager {
 public:
     MetadataManager();
+    
+    bool load(const std::string& filename);
+    bool save(const std::string& filename);
 
     // 文件是否存在
     bool exists(const std::string& path);
