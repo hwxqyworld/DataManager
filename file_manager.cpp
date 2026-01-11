@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>
+#include <cinttypes>
 
 FileManager::FileManager(std::shared_ptr<RAIDChunkStore> raid_store)
     : raid(std::move(raid_store)), file_size(0)
@@ -30,6 +31,8 @@ bool FileManager::read(const std::string &path,
 {
     (void)path;
 
+    fprintf(stderr, "[FM_READ] offset=%" PRIu64 " size=%zu\n", offset, size);
+
     if (offset >= file_size) {
         out.clear();
         return true; // 读 EOF
@@ -50,6 +53,8 @@ bool FileManager::read(const std::string &path,
         uint64_t stripe_offset = pos % STRIPE_SIZE;
         size_t to_read = (size_t)std::min<uint64_t>(
             remaining, STRIPE_SIZE - stripe_offset);
+
+            fprintf(stderr, " [FM_READ_CHUNK] stripe_id=%" PRIu64 " stripe_offset=%" PRIu64 " to_read=%zu\n", stripe_id, stripe_offset, to_read);
 
         std::string stripe_data;
         if (!raid->read_chunk(stripe_id, 0, stripe_data)) {
@@ -78,6 +83,8 @@ bool FileManager::write(const std::string &path,
 {
     (void)path;
 
+    fprintf(stderr, "[FM_WRITE] offset=%" PRIu64 " size=%zu\n", offset, size);
+
     uint64_t pos = offset;
     size_t remaining = size;
 
@@ -86,6 +93,8 @@ bool FileManager::write(const std::string &path,
         uint64_t stripe_offset = pos % STRIPE_SIZE;
         size_t to_write = (size_t)std::min<uint64_t>(
             remaining, STRIPE_SIZE - stripe_offset);
+
+            fprintf(stderr, " [FM_WRITE_CHUNK] stripe_id=%" PRIu64 " stripe_offset=%" PRIu64 " to_write=%zu\n", stripe_id, stripe_offset, to_write);
 
         std::string stripe_data;
         if (!raid->read_chunk(stripe_id, 0, stripe_data)) {
