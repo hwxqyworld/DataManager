@@ -19,10 +19,12 @@ jobs:
           sudo apt update
           sudo apt install -y g++ make pkg-config libfuse3-dev
 
+      - name: Make build.sh executable
+        run: chmod +x build.sh
+
       - name: Build (glibc)
         run: |
-          make clean
-          make release
+          ./build.sh release
           mv datamanager datamanager-${GITHUB_REF_NAME}-glibc
 
       - name: Upload artifact (glibc)
@@ -44,10 +46,12 @@ jobs:
           sudo apt update
           sudo apt install -y musl-tools pkg-config libfuse3-dev
 
+      - name: Make build.sh executable
+        run: chmod +x build.sh
+
       - name: Build (musl static)
         run: |
-          make clean
-          make musl
+          ./build.sh musl
           mv datamanager datamanager-${GITHUB_REF_NAME}-musl
 
       - name: Upload artifact (musl)
