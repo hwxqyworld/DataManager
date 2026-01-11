@@ -57,14 +57,11 @@ bool LocalChunkStore::read_chunk(uint64_t stripe_id,
     out.clear();
     char buf[4096];
     size_t n;
-    size_t total = 0;
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
         out.append(buf, n);
-        total += n;
     }
 
     fclose(fp);
-    fprintf(stderr, "LOCAL_READ stripe=%" PRIu64 " chunk=%u path=%s size=%zu\n", stripe_id, chunk_id, path.c_str(), total);
     return true;
 }
 
@@ -76,7 +73,6 @@ bool LocalChunkStore::write_chunk(uint64_t stripe_id,
     ensure_dir(stripe_id);
 
     auto path = make_path(stripe_id, chunk_id);
-    fprintf(stderr, "LOCAL_WRITE stripe=%" PRIu64 " chunk=%u path=%s size=%zu\n", stripe_id, chunk_id, path.c_str(), data.size());
     FILE *fp = fopen(path.c_str(), "wb");
     if (!fp)
         return false;

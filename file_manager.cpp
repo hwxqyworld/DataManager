@@ -30,10 +30,6 @@ bool FileManager::read(const std::string &path,
 {
     (void)path;
 
-    fprintf(stderr,
-            "[FM_READ] offset=%" PRIu64 " size=%zu\n",
-            (uint64_t)offset, size);
-
     if (offset >= file_size) {
         out.clear();
         return true; // EOF
@@ -54,14 +50,6 @@ bool FileManager::read(const std::string &path,
         uint64_t stripe_offset = pos % STRIPE_SIZE;
         size_t to_read = (size_t)std::min<uint64_t>(
             remaining, STRIPE_SIZE - stripe_offset);
-
-        fprintf(stderr,
-                " [FM_READ_CHUNK] stripe_id=%" PRIu64
-                " stripe_offset=%" PRIu64
-                " to_read=%zu\n",
-                (uint64_t)stripe_id,
-                (uint64_t)stripe_offset,
-                to_read);
 
         std::string stripe_data;
 
@@ -92,10 +80,6 @@ bool FileManager::write(const std::string &path,
 {
     (void)path;
 
-    fprintf(stderr,
-            "[FM_WRITE] offset=%" PRIu64 " size=%zu\n",
-            (uint64_t)offset, size);
-
     uint64_t pos = offset;
     size_t remaining = size;
 
@@ -104,14 +88,6 @@ bool FileManager::write(const std::string &path,
         uint64_t stripe_offset = pos % STRIPE_SIZE;
         size_t to_write = (size_t)std::min<uint64_t>(
             remaining, STRIPE_SIZE - stripe_offset);
-
-        fprintf(stderr,
-                " [FM_WRITE_CHUNK] stripe_id=%" PRIu64
-                " stripe_offset=%" PRIu64
-                " to_write=%zu\n",
-                (uint64_t)stripe_id,
-                (uint64_t)stripe_offset,
-                to_write);
 
         std::string stripe_data;
 
