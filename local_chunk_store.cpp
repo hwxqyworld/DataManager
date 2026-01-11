@@ -72,6 +72,7 @@ bool LocalChunkStore::write_chunk(uint64_t stripe_id,
     ensure_dir(stripe_id);
 
     auto path = make_path(stripe_id, chunk_id);
+    fprintf(stderr, "LOCAL_WRITE stripe=%" PRIu64 " chunk=%u path=%s size=%zu\n", stripe_id, chunk_id, path.c_str(), data.size());
     FILE *fp = fopen(path.c_str(), "wb");
     if (!fp)
         return false;
