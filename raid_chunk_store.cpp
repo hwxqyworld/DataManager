@@ -1,6 +1,7 @@
 #include "raid_chunk_store.h"
 #include <cstdio>
 #include <future>
+#include <cinttypes>
 
 // 构造函数
 RAIDChunkStore::RAIDChunkStore(std::vector<std::shared_ptr<ChunkStore>> backends,
@@ -28,7 +29,7 @@ bool RAIDChunkStore::write_chunk(uint64_t stripe_id,
     // 1. 编码成 k+m 个 chunk
     std::vector<std::string> chunks;
     if (!coder->encode(data, k, m, chunks)) {
-        fprintf(stderr, "RAIDChunkStore::write_chunk: encode 失败\n");
+        fprintf(stderr, "RAIDChunkStore::write_chunk: encode 失败, stripe=%" PRIu64 "\n", stripe_id);
         return false;
     }
     if ((int)chunks.size() != k + m) {
