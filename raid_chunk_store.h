@@ -36,12 +36,15 @@ public:
 
     bool delete_chunk(uint64_t stripe_id,
                       uint32_t chunk_id) override;
+    
+    uint64_t allocate_new_stripe() { return next_stripe_id++; }
 
 private:
     std::vector<std::shared_ptr<ChunkStore>> backends;
     int k;
     int m;
     std::shared_ptr<ErasureCoder> coder;
+    uint64_t next_stripe_id = 0;
 
     // 自动修复：根据完整 data 重新编码，并把缺失 chunk 补写回去
     void repair_missing_chunks(uint64_t stripe_id,

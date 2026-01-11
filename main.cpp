@@ -180,16 +180,15 @@ static int raidfs_truncate(const char *path, off_t size,
 // ------------------------------------------------------------
 // FUSE ops
 // ------------------------------------------------------------
-static const struct fuse_operations raidfs_ops = {
-    .getattr    = raidfs_getattr,
-    .readdir    = raidfs_readdir,
-    .create     = raidfs_create,
-    .unlink     = raidfs_unlink,
-    .truncate   = raidfs_truncate,
-    .open       = raidfs_open,
-    .read       = raidfs_read,
-    .write      = raidfs_write,
-};
+static const struct fuse_operations raidfs_ops = {};
+raidfs.getattr    = raidfs_getattr,
+raidfs.readdir    = raidfs_readdir,
+raidfs.create     = raidfs_create,
+raidfs.unlink     = raidfs_unlink,
+raidfs.truncate   = raidfs_truncate,
+raidfs.open       = raidfs_open,
+raidfs.read       = raidfs_read,
+raidfs.write      = raidfs_write,
 
 // ------------------------------------------------------------
 // main
