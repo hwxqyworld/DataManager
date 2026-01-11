@@ -1,86 +1,97 @@
-# Makefile for datamanager - 最小可运行的 C++ FUSE 文件系统
-# 支持 glibc 和 musl，允许 CC/LD 覆盖
+# Makefile for datamanager - Production-grade FUSE RAID filesystem
+# 自动收集所有 .cpp，支持 glibc/musl/clang/debug/release
 
-# 编译器设置
+# ===========================
+# 编译器与标志
+# ===========================
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -g
-LDFLAGS ?= -lfuse3
+LDFLAGS ?= $(shell pkg-config --libs fuse3 2>/dev/null || echo "-lfuse3")
 
-# 目标文件
-TARGET = datamanager
-SRC = main.cpp
-OBJ = $(SRC:.cpp=.o)
+# ===========================
+# 源码与目标
+# ===========================
+TARGET = cloudraidfs
 
-# 默认目标
+# 自动收集所有 cpp 文件
+SRC := $(wildcard *.cpp)
+OBJ := $(SRC:.cpp=.o)
+
+# ===========================
+# 默认构建
+# ===========================
 all: $(TARGET)
 
-# 链接可执行文件
 $(TARGET): $(OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+    $(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-# 编译源文件
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+    $(CXX) $(CXXFLAGS) -c $< -o $@
 
-# 清理构建文件
+# ===========================
+# 清理
+# ===========================
 clean:
-	rm -f $(OBJ) $(TARGET)
+    rm -f $(OBJ) $(TARGET)
 
-# 安装（可选）
+# ===========================
+# 安装 / 卸载
+# ===========================
 install: $(TARGET)
-	install -m 755 $(TARGET) /usr/local/bin/
+    install -m 755 $(TARGET) /usr/local/bin/
 
-# 卸载（可选）
 uninstall:
-	rm -f /usr/local/bin/$(TARGET)
+    rm -f /usr/local/bin/$(TARGET)
 
-# 使用 musl 编译（如果可用）
-musl: CXX = musl-g++
-musl: LDFLAGS = -lfuse3 -static
-musl: $(TARGET)
-
-# 使用 clang 编译
-clang: CXX = clang++
-clang: $(TARGET)
-
-# 调试构建
+# ===========================
+# 构建模式
+# ===========================
 debug: CXXFLAGS = -std=c++17 -Wall -Wextra -O0 -g -DDEBUG
 debug: $(TARGET)
 
-# 发布构建
 release: CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -DNDEBUG
 release: $(TARGET)
 
-# 检查依赖
+clang: CXX = clang++
+clang: $(TARGET)
+
+musl: CXX = musl-g++
+musl: LDFLAGS = -static $(shell pkg-config --libs fuse3 2>/dev/null || echo "-lfuse3")
+musl: $(TARGET)
+
+# ===========================
+# 依赖检查
+# ===========================
 check-deps:
-	@echo "检查 FUSE3 库..."
-	@pkg-config --exists fuse3 && echo "FUSE3 已安装" || echo "错误: FUSE3 未安装"
-	@echo "检查 C++ 编译器..."
-	@$(CXX) --version | head -1
+    @echo "检查 FUSE3..."
+    @pkg-config --exists fuse3 && echo "✓ FUSE3 已安装" || echo "✗ 未找到 FUSE3"
+    @echo "检查编译器..."
+    @$(CXX) --version | head -1
 
-# 显示帮助
+# ===========================
+# 帮助
+# ===========================
 help:
-	@echo "可用目标:"
-	@echo "  all        - 默认构建 (默认)"
-	@echo "  clean      - 清理构建文件"
-	@echo "  install    - 安装到 /usr/local/bin"
-	@echo "  uninstall  - 卸载"
-	@echo "  musl       - 使用 musl 静态编译"
-	@echo "  clang      - 使用 clang 编译"
-	@echo "  debug      - 调试构建"
-	@echo "  release    - 发布构建"
-	@echo "  check-deps - 检查依赖"
-	@echo "  help       - 显示此帮助"
-	@echo ""
-	@echo "环境变量:"
-	@echo "  CXX        - C++ 编译器 (默认: g++)"
-	@echo "  CXXFLAGS   - 编译器标志"
-	@echo "  LDFLAGS    - 链接器标志"
-	@echo ""
-	@echo "示例:"
-	@echo "  make                      # 默认构建"
-	@echo "  make CXX=clang++          # 使用 clang 编译"
-	@echo "  make debug                # 调试构建"
-	@echo "  make clean && make        # 清理后重新构建"
+    @echo "可用目标:"
+    @echo "  all        - 默认构建"
+    @echo "  clean      - 清理"
+    @echo "  install    - 安装到 /usr/local/bin"
+    @echo "  uninstall  - 卸载"
+    @echo "  debug      - 调试构建"
+    @echo "  release    - 发布构建"
+    @echo "  clang      - 使用 clang 编译"
+    @echo "  musl       - 使用 musl 静态编译"
+    @echo "  check-deps - 检查依赖"
+    @echo "  help       - 显示帮助"
+    @echo ""
+    @echo "环境变量:"
+    @echo "  CXX        - C++ 编译器"
+    @echo "  CXXFLAGS   - 编译器标志"
+    @echo "  LDFLAGS    - 链接器标志"
+    @echo ""
+    @echo "示例:"
+    @echo "  make release"
+    @echo "  make CXX=clang++"
+    @echo "  make musl"
 
-.PHONY: all clean install uninstall musl clang debug release check-deps help
+.PHONY: all clean install uninstall debug release clang musl check-deps help

@@ -1,138 +1,124 @@
 #!/bin/bash
-# build.sh - FUSE3 文件系统构建脚本
+# build.sh - Production-grade build script for DataManager (FUSE RAID FS)
 
-set -e  # 遇到错误时退出
+set -e
 
-# 颜色输出
+# -----------------------------
+# 颜色
+# -----------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${GREEN}=== 构建脚本 ===${NC}"
+echo -e "${GREEN}=== DataManager Build System ===${NC}"
 
-# 检查是否在正确的目录
-if [ ! -f "main.cpp" ] || [ ! -f "Makefile" ]; then
-    echo -e "${RED}错误: 请在包含 main.cpp 和 Makefile 的目录中运行此脚本${NC}"
-    exit 1
+# -----------------------------
+# 版本号（自动从 git 获取）
+# -----------------------------
+if git describe --tags --dirty --always >/dev/null 2>&1; then
+    VERSION=$(git describe --tags --dirty --always)
+else
+    VERSION="v0.0.0-unknown"
 fi
 
-# 检查依赖
-echo -e "${YELLOW}检查依赖...${NC}"
+echo -e "${YELLOW}Version: ${VERSION}${NC}"
 
+# -----------------------------
+# 参数解析
+# -----------------------------
+MODE="${1:-release}"
+
+echo -e "${YELLOW}Build mode: ${MODE}${NC}"
+
+# -----------------------------
 # 检查编译器
-if command -v g++ &> /dev/null; then
-    echo "✓ 找到 g++"
+# -----------------------------
+if command -v g++ >/dev/null 2>&1; then
     CXX="g++"
-elif command -v clang++ &> /dev/null; then
-    echo "✓ 找到 clang++"
+elif command -v clang++ >/dev/null 2>&1; then
     CXX="clang++"
 else
-    echo -e "${RED}错误: 未找到 C++ 编译器${NC}"
-    echo "请安装 g++ 或 clang++"
+    echo -e "${RED}错误: 未找到 g++ 或 clang++${NC}"
     exit 1
 fi
 
+# -----------------------------
 # 检查 FUSE3
+# -----------------------------
 if pkg-config --exists fuse3; then
-    echo "✓ 找到 FUSE3 库"
     FUSE_CFLAGS=$(pkg-config --cflags fuse3)
     FUSE_LIBS=$(pkg-config --libs fuse3)
 else
-    echo -e "${RED}警告: 未找到 FUSE3 开发文件${NC}"
-    echo "在 Ubuntu/Debian 上: sudo apt install libfuse3-dev"
-    echo "在 Fedora/RHEL 上: sudo dnf install fuse3-devel"
-    echo "在 Arch 上: sudo pacman -S fuse3"
-    echo "继续构建，但可能会失败..."
-    FUSE_CFLAGS=""
-    FUSE_LIBS="-lfuse3"
+    echo -e "${RED}错误: 未找到 FUSE3 开发包${NC}"
+    echo "Ubuntu: sudo apt install libfuse3-dev"
+    exit 1
 fi
 
-# 显示构建选项
-echo ""
-echo -e "${YELLOW}构建选项:${NC}"
-echo "1. 标准构建 (默认)"
-echo "2. 调试构建"
-echo "3. 发布构建"
-echo "4. 使用 clang"
-echo "5. 使用 musl (静态)"
-echo "6. 清理"
-echo "7. 检查依赖"
-echo "8. 退出"
+# -----------------------------
+# 源文件列表（自动扫描）
+# -----------------------------
+SRC=$(ls *.cpp)
 
-read -p "选择选项 [1-8]: " choice
+# -----------------------------
+# 输出文件
+# -----------------------------
+OUT="datamanager"
 
-case $choice in
-    1)
-        echo -e "${GREEN}执行标准构建...${NC}"
-        $CXX $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
+# -----------------------------
+# 构建模式
+# -----------------------------
+case "$MODE" in
+    debug)
+        CXXFLAGS="-g -O0 -Wall -Wextra -DDEBUG"
         ;;
-    2)
-        echo -e "${GREEN}执行调试构建...${NC}"
-        $CXX $FUSE_CFLAGS -g -O0 main.cpp -o datamanager $FUSE_LIBS
+
+    release)
+        CXXFLAGS="-O3 -DNDEBUG"
         ;;
-    3)
-        echo -e "${GREEN}执行发布构建...${NC}"
-        $CXX $FUSE_CFLAGS -O3 main.cpp -o datamanager $FUSE_LIBS
+
+    clang)
+        CXX="clang++"
+        CXXFLAGS="-O3 -DNDEBUG"
         ;;
-    4)
-        echo -e "${GREEN}使用 clang 构建...${NC}"
-        clang++ $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
-        ;;
-    5)
-        echo -e "${GREEN}使用 musl 静态构建...${NC}"
-        if ! command -v musl-g++ &> /dev/null; then
+
+    static)
+        if ! command -v musl-g++ >/dev/null 2>&1; then
             echo -e "${RED}错误: musl-g++ 未找到${NC}"
-            echo "请先安装 musl:"
-            echo "在 Ubuntu/Debian 上: sudo apt install musl-tools"
+            echo "Ubuntu: sudo apt install musl-tools"
             exit 1
         fi
-        musl-g++ $FUSE_CFLAGS -static -O2 main.cpp -o datamanager $FUSE_LIBS
+        CXX="musl-g++"
+        CXXFLAGS="-O3 -static -DNDEBUG"
         ;;
-    6)
+
+    clean)
         echo -e "${GREEN}清理构建文件...${NC}"
-        rm -f datamanager
-        ;;
-    7)
-        echo -e "${GREEN}检查依赖...${NC}"
-        echo "g++ 或 clang++: $CXX"
-        echo "FUSE3: $(pkg-config --modversion fuse3 2>/dev/null || echo '未找到')"
-        ;;
-    8)
-        echo "退出"
+        rm -f "$OUT"
         exit 0
         ;;
+
     *)
-        echo -e "${YELLOW}无效选择，使用标准构建${NC}"
-        $CXX $FUSE_CFLAGS -O2 main.cpp -o datamanager $FUSE_LIBS
+        echo -e "${RED}未知构建模式: $MODE${NC}"
+        echo "可用模式: debug / release / static / clang / clean"
+        exit 1
         ;;
 esac
 
-# 检查构建结果
-if [ -f "datamanager" ]; then
-    echo ""
-    echo -e "${GREEN}✓ 构建成功！${NC}"
-    echo "生成的可执行文件: ./datamanager"
-    echo ""
-    echo -e "${YELLOW}使用方法:${NC}"
-    echo "1. 创建后端目录: mkdir -p /tmp/backend"
-    echo "2. 创建挂载点: mkdir -p /tmp/mnt"
-    echo "3. 在前台运行: ./datamanager /tmp/backend /tmp/mnt -f"
-    echo "4. 在后台运行: ./datamanager /tmp/backend /tmp/mnt &"
-    echo ""
-    echo -e "${YELLOW}测试:${NC}"
-    echo "在另一个终端中:"
-    echo "  ls /tmp/mnt"
-    echo "  echo 'test' > /tmp/mnt/test.txt"
-    echo "  cat /tmp/mnt/test.txt"
-    echo ""
-    echo -e "${YELLOW}卸载:${NC}"
-    echo "  fusermount3 -u /tmp/mnt"
-else
-    if [ "$choice" != "6" ]; then
-        echo -e "${RED}✗ 构建失败${NC}"
-        exit 1
-    fi
-fi
+# -----------------------------
+# 执行构建
+# -----------------------------
+echo -e "${GREEN}开始构建...${NC}"
 
-echo -e "${GREEN}完成！${NC}"
+$CXX $CXXFLAGS \
+    $FUSE_CFLAGS \
+    -D_DM_VERSION="\"${VERSION}\"" \
+    $SRC \
+    -o "$OUT" \
+    $FUSE_LIBS
+
+echo -e "${GREEN}✓ 构建成功${NC}"
+echo "输出文件: ./${OUT}"
+echo ""
+echo -e "${YELLOW}运行示例:${NC}"
+echo "  sudo ./${OUT} /data/raid0 /mnt/raidfs"
