@@ -205,7 +205,9 @@ int main(int argc, char *argv[])
     // );
 
     //just for test
-    fuse_argv.push_back("cx114514");
+    fuse_argv.push_back((char*)"cx114514");
+    fuse_argv.push_back((char*)"-f");
+    fuse_argv.push_back((char*)"-d");
     fuse_argv.push_back((char*)mountpoint);
     struct fuse_args args = FUSE_ARGS_INIT(
         (int)fuse_argv.size(),
