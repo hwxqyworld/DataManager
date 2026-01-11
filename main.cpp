@@ -191,24 +191,14 @@ int main(int argc, char *argv[])
 
     // 构造 FUSE 参数：progname, mountpoint, 其余 FUSE options
     std::vector<char*> fuse_argv;
-    // fuse_argv.push_back(argv[0]);       // 程序名
-    // fuse_argv.push_back(argv[1]);       // 挂载点
+    fuse_argv.push_back(argv[0]);       // 程序名
+    fuse_argv.push_back(argv[1]);       // 挂载点
 
-    // // 其余参数（从 argv[7] 开始）是 FUSE options
-    // for (int i = 7; i < argc; i++) {
-    //     fuse_argv.push_back(argv[i]);
-    // }
+    // 其余参数（从 argv[7] 开始）是 FUSE options
+    for (int i = 7; i < argc; i++) {
+        fuse_argv.push_back(argv[i]);
+    }
 
-    // struct fuse_args args = FUSE_ARGS_INIT(
-    //     (int)fuse_argv.size(),
-    //     fuse_argv.data()
-    // );
-
-    //just for test
-    fuse_argv.push_back((char*)"cx114514");
-    fuse_argv.push_back((char*)"-f");
-    fuse_argv.push_back((char*)"-d");
-    fuse_argv.push_back((char*)mountpoint);
     struct fuse_args args = FUSE_ARGS_INIT(
         (int)fuse_argv.size(),
         fuse_argv.data()
