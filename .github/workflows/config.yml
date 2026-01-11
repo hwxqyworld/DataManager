@@ -1,0 +1,88 @@
+name: Build and Release datamanager
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-glibc:
+    name: Build (glibc)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y g++ make pkg-config libfuse3-dev
+
+      - name: Build (glibc)
+        run: |
+          make clean
+          make release
+          mv datamanager datamanager-${GITHUB_REF_NAME}-glibc
+
+      - name: Upload artifact (glibc)
+        uses: actions/upload-artifact@v4
+        with:
+          name: datamanager-glibc
+          path: datamanager-${GITHUB_REF_NAME}-glibc
+
+  build-musl:
+    name: Build (musl static)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools pkg-config libfuse3-dev
+
+      - name: Build (musl static)
+        run: |
+          make clean
+          make musl
+          mv datamanager datamanager-${GITHUB_REF_NAME}-musl
+
+      - name: Upload artifact (musl)
+        uses: actions/upload-artifact@v4
+        with:
+          name: datamanager-musl
+          path: datamanager-${GITHUB_REF_NAME}-musl
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [build-glibc, build-musl]
+
+    steps:
+      - name: Download glibc artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: datamanager-glibc
+          path: .
+
+      - name: Download musl artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: datamanager-musl
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "datamanager ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: |
+            datamanager-${{ github.ref_name }}-glibc
+            datamanager-${{ github.ref_name }}-musl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
