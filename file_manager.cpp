@@ -1,34 +1,81 @@
 #include "file_manager.h"
 #include <algorithm>
-#include <vector>
 #include <cstring>
 #include <cinttypes>
+#include <iostream>
 
-FileManager::FileManager(std::shared_ptr<RAIDChunkStore> raid_store)
-    : raid(std::move(raid_store)), file_size(0)
+FileManager::FileManager(std::shared_ptr<RAIDChunkStore> raid_store,
+                         std::shared_ptr<MetadataManager> meta_mgr)
+    : raid(std::move(raid_store)),
+      meta(std::move(meta_mgr))
 {
 }
 
-uint64_t FileManager::get_size(const std::string &path) const
-{
-    (void)path; // 目前只管理一个文件
-    return file_size;
+// ------------------------------------------------------------
+// 获取文件大小
+// ------------------------------------------------------------
+uint64_t FileManager::get_size(const std::string &path) {
+    return meta->get_size(path);
 }
 
-bool FileManager::truncate(const std::string &path, uint64_t new_size)
-{
-    (void)path;
-    // 极简实现：只更新内存中的 file_size
-    file_size = new_size;
+// ------------------------------------------------------------
+// 截断文件
+// ------------------------------------------------------------
+bool FileManager::truncate(const std::string &path, uint64_t new_size) {
+    meta->set_size(path, new_size);
     return true;
 }
 
+// ------------------------------------------------------------
+// 读取单个 stripe
+// ------------------------------------------------------------
+bool FileManager::read_stripe(uint64_t stripe_id, std::string &out) {
+    if (!raid->read_chunk(stripe_id, 0, out)) {
+        // stripe 不存在或解码失败 → 视为全 0
+        out.assign((size_t)STRIPE_SIZE, 0);
+        return true;
+    }
+
+    // 确保长度至少为一个 stripe
+    if (out.size() < STRIPE_SIZE) {
+        out.resize((size_t)STRIPE_SIZE, 0);
+    }
+    return true;
+}
+
+// ------------------------------------------------------------
+// 写入单个 stripe
+// ------------------------------------------------------------
+bool FileManager::write_stripe(uint64_t stripe_id, const std::string &data) {
+    return raid->write_chunk(stripe_id, 0, data);
+}
+
+// ------------------------------------------------------------
+// 确保 stripe 存在，不存在则分配
+// ------------------------------------------------------------
+uint64_t FileManager::ensure_stripe(const std::string &path, uint64_t stripe_index) {
+    auto &stripes = meta->get_stripes(path);
+
+    // stripe 已存在
+    if (stripe_index < stripes.size()) {
+        return stripes[stripe_index];
+    }
+
+    // stripe 不存在 → 分配新 stripe_id
+    uint64_t new_id = raid->allocate_new_stripe();
+    meta->add_stripe(path, new_id);
+    return new_id;
+}
+
+// ------------------------------------------------------------
+// 读取文件
+// ------------------------------------------------------------
 bool FileManager::read(const std::string &path,
                        uint64_t offset,
                        size_t size,
                        std::string &out)
 {
-    (void)path;
+    uint64_t file_size = meta->get_size(path);
 
     if (offset >= file_size) {
         out.clear();
@@ -46,22 +93,20 @@ bool FileManager::read(const std::string &path,
     size_t remaining = size;
 
     while (remaining > 0) {
-        uint64_t stripe_id = pos / STRIPE_SIZE;
+        uint64_t stripe_index = pos / STRIPE_SIZE;
         uint64_t stripe_offset = pos % STRIPE_SIZE;
-        size_t to_read = (size_t)std::min<uint64_t>(
-            remaining, STRIPE_SIZE - stripe_offset);
+        size_t to_read = std::min<uint64_t>(remaining, STRIPE_SIZE - stripe_offset);
+
+        const auto &stripes = meta->get_stripes(path);
 
         std::string stripe_data;
 
-        // 尝试从 RAID 读取整个条带
-        if (!raid->read_chunk(stripe_id, 0, stripe_data)) {
-            // 条带不存在或解码失败：当作全 0 条带
+        if (stripe_index < stripes.size()) {
+            uint64_t stripe_id = stripes[stripe_index];
+            read_stripe(stripe_id, stripe_data);
+        } else {
+            // stripe 不存在 → 全 0
             stripe_data.assign((size_t)STRIPE_SIZE, 0);
-        }
-
-        // 保证条带长度覆盖到我们要读取的范围
-        if (stripe_offset + to_read > stripe_data.size()) {
-            stripe_data.resize(stripe_offset + to_read, 0);
         }
 
         out.append(stripe_data.data() + stripe_offset, to_read);
@@ -73,43 +118,37 @@ bool FileManager::read(const std::string &path,
     return true;
 }
 
+// ------------------------------------------------------------
+// 写入文件
+// ------------------------------------------------------------
 bool FileManager::write(const std::string &path,
                         uint64_t offset,
                         const char *data,
                         size_t size)
 {
-    (void)path;
-
     uint64_t pos = offset;
     size_t remaining = size;
 
     while (remaining > 0) {
-        uint64_t stripe_id = pos / STRIPE_SIZE;
+        uint64_t stripe_index = pos / STRIPE_SIZE;
         uint64_t stripe_offset = pos % STRIPE_SIZE;
-        size_t to_write = (size_t)std::min<uint64_t>(
-            remaining, STRIPE_SIZE - stripe_offset);
+        size_t to_write = std::min<uint64_t>(remaining, STRIPE_SIZE - stripe_offset);
 
+        // 确保 stripe 存在
+        uint64_t stripe_id = ensure_stripe(path, stripe_index);
+
+        // 读取旧 stripe
         std::string stripe_data;
+        read_stripe(stripe_id, stripe_data);
 
-        // 尝试读取已有条带数据
-        if (!raid->read_chunk(stripe_id, 0, stripe_data)) {
-            // 条带完全不存在：构造一条全 0 条带
-            stripe_data.assign((size_t)STRIPE_SIZE, 0);
-        } else {
-            // 条带存在：保证长度至少一个条带大小
-            if (stripe_data.size() < STRIPE_SIZE) {
-                stripe_data.resize((size_t)STRIPE_SIZE, 0);
-            }
-        }
-
-        // 把本次写入覆盖到条带的对应位置
+        // 覆盖写入
         std::memcpy(&stripe_data[(size_t)stripe_offset], data, to_write);
 
-        // 整条带写回 RAID
-        if (!raid->write_chunk(stripe_id, 0, stripe_data)) {
+        // 写回 RAID
+        if (!write_stripe(stripe_id, stripe_data)) {
             fprintf(stderr,
                     "FileManager::write: write_chunk 失败, stripe_id=%" PRIu64 "\n",
-                    (uint64_t)stripe_id);
+                    stripe_id);
             return false;
         }
 
@@ -120,8 +159,8 @@ bool FileManager::write(const std::string &path,
 
     // 更新文件大小
     uint64_t end_pos = offset + size;
-    if (end_pos > file_size) {
-        file_size = end_pos;
+    if (end_pos > meta->get_size(path)) {
+        meta->set_size(path, end_pos);
     }
 
     return true;

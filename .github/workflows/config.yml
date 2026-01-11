@@ -25,13 +25,12 @@ jobs:
       - name: Build (glibc)
         run: |
           ./build.sh release
-          mv cloudraidfs cloudraidfs-${GITHUB_REF_NAME}-glibc
 
       - name: Upload artifact (glibc)
         uses: actions/upload-artifact@v4
         with:
           name: cloudraidfs-glibc
-          path: cloudraidfs-${GITHUB_REF_NAME}-glibc
+          path: cloudraidfs
 
   build-musl:
     name: Build (musl static)
@@ -44,21 +43,21 @@ jobs:
       - name: Install musl toolchain
         run: |
           sudo apt update
-          sudo apt install -y musl-tools pkg-config libfuse3-dev
+          sudo apt install -y musl-tools pkg-config libfuse3-dev musl-g++
 
       - name: Make build.sh executable
         run: chmod +x build.sh
 
       - name: Build (musl static)
         run: |
-          ./build.sh static
-          mv cloudraidfs cloudraidfs-${GITHUB_REF_NAME}-musl
+          ./build.sh musl
+          mv cloudraidfs cloudraidfs-musl
 
       - name: Upload artifact (musl)
         uses: actions/upload-artifact@v4
         with:
           name: cloudraidfs-musl
-          path: cloudraidfs-${GITHUB_REF_NAME}-musl
+          path: cloudraidfs-musl
 
   release:
     name: Publish Release
@@ -86,7 +85,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            cloudraidfs-${{ github.ref_name }}-glibc
-            cloudraidfs-${{ github.ref_name }}-musl
+            cloudraidfs
+            cloudraidfs-musl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

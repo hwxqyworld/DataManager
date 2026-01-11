@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - Production-grade build script for CloudRainFs (FUSE RAID FS)
+# build.sh - Production-grade build script for CloudRaidFs (FUSE RAID FS)
 
 set -e
 
@@ -82,7 +82,7 @@ case "$MODE" in
         CXXFLAGS="-O3 -DNDEBUG"
         ;;
 
-    static)
+    musl|static)
         if ! command -v musl-g++ >/dev/null 2>&1; then
             echo -e "${RED}错误: musl-g++ 未找到${NC}"
             echo "Ubuntu: sudo apt install musl-tools"
@@ -100,7 +100,7 @@ case "$MODE" in
 
     *)
         echo -e "${RED}未知构建模式: $MODE${NC}"
-        echo "可用模式: debug / release / static / clang / clean"
+        echo "可用模式: debug / release / musl / clang / clean"
         exit 1
         ;;
 esac
