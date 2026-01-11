@@ -69,14 +69,28 @@ bool RSCoder::encode(const std::string &data,
         return false;
     }
 
+    const size_t meta_size = sizeof(uint64_t); // 8 字节长度头
+    uint64_t orig_size = (uint64_t)data.size();
+
+    // 总的数据长度 = 头部 + payload
+    size_t total = meta_size + data.size();
+
     // 每个数据块长度（向上取整）
-    size_t chunk_size = (data.size() + (size_t)k - 1) / (size_t)k;
+    size_t chunk_size = (total + (size_t)k - 1) / (size_t)k;
 
     // 填充到 k * chunk_size
-    std::string padded = data;
-    padded.resize(chunk_size * (size_t)k, 0);
+    size_t padded_size = chunk_size * (size_t)k;
+    std::string padded(padded_size, 0);
 
-    // 输出 k+m 个 chunk，每个 chunk 长度相同
+    // 写入长度头（前 8 字节）
+    std::memcpy(&padded[0], &orig_size, meta_size);
+
+    // 写入 payload
+    if (!data.empty()) {
+        std::memcpy(&padded[meta_size], data.data(), data.size());
+    }
+
+    // 输出 k+m 个 chunk，每个 chunk 仅存 payload（无额外头）
     out_chunks.assign(k + m, std::string(chunk_size, 0));
 
     // 生成编码矩阵（k+m 行，k 列）
@@ -95,12 +109,6 @@ bool RSCoder::encode(const std::string &data,
         }
     }
 
-    // 在 chunk0 的头部写入原始长度（8 字节）
-    uint64_t orig_size = (uint64_t)data.size();
-    std::string header(reinterpret_cast<const char*>(&orig_size),
-                       sizeof(orig_size));
-    out_chunks[0].insert(0, header);
-
     return true;
 }
 
@@ -114,16 +122,9 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         return false;
     }
 
-    // 从 chunk0 读取原始长度
-    uint64_t orig_size = 0;
-    if (chunks[0].size() >= sizeof(orig_size)) {
-        std::memcpy(&orig_size, chunks[0].data(), sizeof(orig_size));
-    } else {
-        fprintf(stderr, "RSCoder::decode: chunk0 长度不足以包含长度头\n");
-        return false;
-    }
+    const size_t meta_size = sizeof(uint64_t);
 
-    // 收集最多 k 个有效 chunk 的索引
+    // 收集最多 k 个有效 chunk 的索引（非空）
     std::vector<int> valid;
     valid.reserve(k);
     for (int i = 0; i < k + m; i++) {
@@ -137,19 +138,16 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         return false;
     }
 
-    // 计算有效负载 chunk_size
-    size_t chunk_size = 0;
-    {
-        int idx0 = valid[0];
-        size_t len0 = chunks[idx0].size();
-        if (idx0 == 0) {
-            if (len0 < sizeof(orig_size)) {
-                fprintf(stderr, "RSCoder::decode: chunk0 长度不足\n");
-                return false;
-            }
-            chunk_size = len0 - sizeof(orig_size);
-        } else {
-            chunk_size = len0;
+    // 检查这些有效 chunk 长度是否一致，并确定 chunk_size
+    size_t chunk_size = chunks[valid[0]].size();
+    if (chunk_size < meta_size) {
+        fprintf(stderr, "RSCoder::decode: 有效 chunk 长度不足以包含头部\n");
+        return false;
+    }
+    for (int idx : valid) {
+        if (chunks[idx].size() != chunk_size) {
+            fprintf(stderr, "RSCoder::decode: 有效 chunk 长度不一致\n");
+            return false;
         }
     }
 
@@ -165,7 +163,7 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
     }
 
     // 解出的 k 个数据块（总长度 k * chunk_size）
-    out_data.assign(chunk_size * (size_t)k, 0);
+    std::string padded(chunk_size * (size_t)k, 0);
 
     // 对每个字节位置做一次求解
     for (size_t b = 0; b < chunk_size; b++) {
@@ -175,25 +173,14 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
             int idx = valid[r];
             const std::string &chunk = chunks[idx];
 
-            size_t offset;
-            if (idx == 0) {
-                if (chunk.size() < sizeof(orig_size) + b + 1) {
-                    fprintf(stderr, "RSCoder::decode: chunk0 数据长度不足\n");
-                    return false;
-                }
-                offset = sizeof(orig_size) + b;
-            } else {
-                if (chunk.size() < b + 1) {
-                    fprintf(stderr, "RSCoder::decode: chunk %d 数据长度不足\n", idx);
-                    return false;
-                }
-                offset = b;
+            if (chunk.size() < b + 1) {
+                fprintf(stderr, "RSCoder::decode: chunk %d 数据长度不足\n", idx);
+                return false;
             }
-
-            vec[r] = (uint8_t)chunk[offset];
+            vec[r] = (uint8_t)chunk[b];
         }
 
-        // 每个字节要用一份矩阵拷贝做高斯消元
+        // 高斯消元
         std::vector<std::vector<uint8_t>> mat = base_mat;
         std::vector<uint8_t> sol(k);
         if (!solve_matrix(mat, vec, sol)) {
@@ -202,16 +189,27 @@ bool RSCoder::decode(const std::vector<std::string> &chunks,
         }
 
         for (int i = 0; i < k; i++) {
-            out_data[(size_t)i * chunk_size + b] = (char)sol[i];
+            padded[(size_t)i * chunk_size + b] = (char)sol[i];
         }
     }
 
-    // 按原始长度截断
-    if ((uint64_t)out_data.size() < orig_size) {
-        fprintf(stderr, "RSCoder::decode: 解码结果长度不足 orig_size\n");
+    // 从 padded 的前 8 字节里取出 orig_size
+    if (padded.size() < meta_size) {
+        fprintf(stderr, "RSCoder::decode: 解码结果长度不足以包含头部\n");
         return false;
     }
-    out_data.resize((size_t)orig_size);
+
+    uint64_t orig_size = 0;
+    std::memcpy(&orig_size, padded.data(), meta_size);
+
+    size_t max_payload = padded.size() - meta_size;
+    if (orig_size > (uint64_t)max_payload) {
+        fprintf(stderr, "RSCoder::decode: orig_size 超出解码 payload 长度\n");
+        return false;
+    }
+
+    out_data.assign(padded.data() + meta_size,
+                    padded.data() + meta_size + (size_t)orig_size);
 
     return true;
 }
