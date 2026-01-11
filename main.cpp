@@ -198,7 +198,7 @@ static void init_ops() {
 int main(int argc, char *argv[])
 {
     init_ops();
-    
+
     // ./cloudraidfs <mountpoint> <dir0> <dir1> <dir2> <dir3> <dir4> [FUSE options...]
 
     if (argc < 7) {
