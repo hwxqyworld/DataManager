@@ -62,6 +62,7 @@ bool LocalChunkStore::read_chunk(uint64_t stripe_id,
     }
 
     fclose(fp);
+    fprintf(stderr, "LOCAL_READ stripe=%" PRIu64 " chunk=%u path=%s size=%zu\n", stripe_id, chunk_id, path.c_str(), total);
     return true;
 }
 
