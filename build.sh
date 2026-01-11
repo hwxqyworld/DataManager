@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - Production-grade build script for DataManager (FUSE RAID FS)
+# build.sh - Production-grade build script for CloudRainFs (FUSE RAID FS)
 
 set -e
 
@@ -11,7 +11,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== DataManager Build System ===${NC}"
+echo -e "${GREEN}=== CloudRaidFs Build System ===${NC}"
 
 # -----------------------------
 # 版本号（自动从 git 获取）
@@ -63,7 +63,7 @@ SRC=$(ls *.cpp)
 # -----------------------------
 # 输出文件
 # -----------------------------
-OUT="datamanager"
+OUT="cloudraidfs"
 
 # -----------------------------
 # 构建模式

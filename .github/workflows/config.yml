@@ -1,4 +1,4 @@
-name: Build and Release datamanager
+name: Build and Release cloudraidfs
 
 on:
   push:
@@ -25,13 +25,13 @@ jobs:
       - name: Build (glibc)
         run: |
           ./build.sh release
-          mv datamanager datamanager-${GITHUB_REF_NAME}-glibc
+          mv cloudraidfs cloudraidfs-${GITHUB_REF_NAME}-glibc
 
       - name: Upload artifact (glibc)
         uses: actions/upload-artifact@v4
         with:
-          name: datamanager-glibc
-          path: datamanager-${GITHUB_REF_NAME}-glibc
+          name: cloudraidfs-glibc
+          path: cloudraidfs-${GITHUB_REF_NAME}-glibc
 
   build-musl:
     name: Build (musl static)
@@ -51,14 +51,14 @@ jobs:
 
       - name: Build (musl static)
         run: |
-          ./build.sh musl
-          mv datamanager datamanager-${GITHUB_REF_NAME}-musl
+          ./build.sh static
+          mv cloudraidfs cloudraidfs-${GITHUB_REF_NAME}-musl
 
       - name: Upload artifact (musl)
         uses: actions/upload-artifact@v4
         with:
-          name: datamanager-musl
-          path: datamanager-${GITHUB_REF_NAME}-musl
+          name: cloudraidfs-musl
+          path: cloudraidfs-${GITHUB_REF_NAME}-musl
 
   release:
     name: Publish Release
@@ -69,24 +69,24 @@ jobs:
       - name: Download glibc artifact
         uses: actions/download-artifact@v4
         with:
-          name: datamanager-glibc
+          name: cloudraidfs-glibc
           path: .
 
       - name: Download musl artifact
         uses: actions/download-artifact@v4
         with:
-          name: datamanager-musl
+          name: cloudraidfs-musl
           path: .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "datamanager ${{ github.ref_name }}"
+          name: "cloudraidfs ${{ github.ref_name }}"
           draft: false
           prerelease: false
           files: |
-            datamanager-${{ github.ref_name }}-glibc
-            datamanager-${{ github.ref_name }}-musl
+            cloudraidfs-${{ github.ref_name }}-glibc
+            cloudraidfs-${{ github.ref_name }}-musl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

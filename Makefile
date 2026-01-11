@@ -1,4 +1,4 @@
-# Makefile for datamanager - Production-grade FUSE RAID filesystem
+# Makefile for cloudraidfs - Production-grade FUSE RAID filesystem
 # 自动收集所有 .cpp，支持 glibc/musl/clang/debug/release
 
 # ===========================
