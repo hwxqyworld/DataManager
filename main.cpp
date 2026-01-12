@@ -19,6 +19,16 @@
 static std::shared_ptr<FileManager> g_fm;
 static std::shared_ptr<MetadataManager> g_meta;
 
+// 和 MetadataManager 中保持一致
+static const char* META_PATH = "/.__cloudraidfs_meta";
+
+// ------------------------------------------------------------
+// 辅助：是否是内部元数据文件
+// ------------------------------------------------------------
+static inline bool is_internal_meta(const std::string& p) {
+    return p == META_PATH;
+}
+
 // ------------------------------------------------------------
 // getattr
 // ------------------------------------------------------------
@@ -29,6 +39,11 @@ static int raidfs_getattr(const char *path, struct stat *stbuf,
     memset(stbuf, 0, sizeof(struct stat));
 
     std::string p(path);
+
+    // 屏蔽内部元数据文件
+    if (is_internal_meta(p)) {
+        return -ENOENT;
+    }
 
     if (p == "/") {
         stbuf->st_mode = S_IFDIR | 0755;
@@ -74,6 +89,10 @@ static int raidfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     filler(buf, "..", nullptr, 0, FUSE_FILL_DIR_PLUS);
 
     for (auto &name : list) {
+        // 不把内部元数据文件暴露出来
+        if (p == "/" && name == META_PATH + 1) {
+            continue;
+        }
         filler(buf, name.c_str(), nullptr, 0, FUSE_FILL_DIR_PLUS);
     }
 
@@ -90,6 +109,10 @@ static int raidfs_create(const char *path, mode_t mode,
     (void)fi;
 
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
     g_meta->create_file(p);
     return 0;
 }
@@ -100,6 +123,9 @@ static int raidfs_create(const char *path, mode_t mode,
 static int raidfs_unlink(const char *path)
 {
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
 
     if (!g_meta->exists(p))
         return -ENOENT;
@@ -114,6 +140,9 @@ static int raidfs_unlink(const char *path)
 static int raidfs_open(const char *path, struct fuse_file_info *fi)
 {
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
 
     if (!g_meta->exists(p))
         return -ENOENT;
@@ -130,6 +159,10 @@ static int raidfs_read(const char *path, char *buf, size_t size, off_t offset,
     (void)fi;
 
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
     if (!g_meta->exists(p))
         return -ENOENT;
 
@@ -150,6 +183,10 @@ static int raidfs_write(const char *path, const char *buf, size_t size,
     (void)fi;
 
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
     if (!g_meta->exists(p))
         return -ENOENT;
 
@@ -168,6 +205,10 @@ static int raidfs_truncate(const char *path, off_t size,
     (void)fi;
 
     std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
     if (!g_meta->exists(p))
         return -ENOENT;
 
@@ -200,7 +241,7 @@ int main(int argc, char *argv[])
     init_ops();
 
     if (argc < 2) {
-        fprintf(stderr, "用法: %s <config.yml> [FUSE options]\n", argv[0]);
+        std::fprintf(stderr, "用法: %s <config.yml> [FUSE options]\n", argv[0]);
         return 1;
     }
 
@@ -209,7 +250,7 @@ int main(int argc, char *argv[])
     // ------------------------------------------------------------
     YmlParser parser;
     if (!parser.load_file(argv[1])) {
-        fprintf(stderr, "无法读取配置文件: %s\n", argv[1]);
+        std::fprintf(stderr, "无法读取配置文件: %s\n", argv[1]);
         return 1;
     }
 
@@ -225,7 +266,7 @@ int main(int argc, char *argv[])
     // backends
     std::vector<std::shared_ptr<ChunkStore>> backends;
 
-    // 重新解析 backends（map 列表）
+    // backends 以 map 形式存储：backend0, backend1, ...
     const auto &backend_map = root.map.at("backends").map;
     for (const auto &kv : backend_map) {
         const YmlNode &node = kv.second;
@@ -237,13 +278,15 @@ int main(int argc, char *argv[])
             backends.push_back(std::make_shared<LocalChunkStore>(path));
         }
         else if (type == "webdav") {
-            std::string url = node.map.at("url").value;
-            std::string user = node.map.count("username") ? node.map.at("username").value : "";
-            std::string pass = node.map.count("password") ? node.map.at("password").value : "";
+            std::string url  = node.map.at("url").value;
+            std::string user = node.map.count("username")
+                               ? node.map.at("username").value : "";
+            std::string pass = node.map.count("password")
+                               ? node.map.at("password").value : "";
             backends.push_back(std::make_shared<WebDavChunkStore>(url, user, pass));
         }
         else {
-            fprintf(stderr, "未知后端类型: %s\n", type.c_str());
+            std::fprintf(stderr, "未知后端类型: %s\n", type.c_str());
             return 1;
         }
     }
@@ -252,15 +295,16 @@ int main(int argc, char *argv[])
     // 构建 RAID 层
     // ------------------------------------------------------------
     auto coder = std::make_shared<RSCoder>();
-    auto raid = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
+    auto raid  = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
 
     // ------------------------------------------------------------
     // 初始化元数据与文件管理器
     // ------------------------------------------------------------
     g_meta = std::make_shared<MetadataManager>();
-    g_meta->load("metadata.json");
+    g_fm   = std::make_shared<FileManager>(raid, g_meta);
 
-    g_fm = std::make_shared<FileManager>(raid, g_meta);
+    // 元数据存储在 CloudRaidFS 内部文件中
+    g_meta->load_from_backend(g_fm.get());
 
     // ------------------------------------------------------------
     // 构造 FUSE 参数
@@ -282,7 +326,8 @@ int main(int argc, char *argv[])
 
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
 
-    g_meta->save("metadata.json");
+    // 退出前保存元数据到 CloudRaidFS
+    g_meta->save_to_backend(g_fm.get());
     fuse_opt_free_args(&args);
 
     return ret;

@@ -16,11 +16,11 @@ public:
     ~WebDavChunkStore();
 
     bool read_chunk(uint64_t stripe_id,
-                    int chunk_index,
+                    uint32_t chunk_index,
                     std::string& out) override;
 
     bool write_chunk(uint64_t stripe_id,
-                     int chunk_index,
+                     uint32_t chunk_index,
                      const std::string& data) override;
 
 private:
