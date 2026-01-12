@@ -27,10 +27,12 @@ public:
 
 private:
     std::string base_url;
+    std::string username;
+    std::string password;
     ne_session* session;
     std::mutex mu;
 
-    std::string make_path(uint64_t stripe_id, int chunk_index) const;
+    std::string make_path(uint64_t stripe_id, uint32_t chunk_index) const;
 };
 
 #endif

@@ -5,6 +5,7 @@
 #include <neon/ne_utils.h>
 #include <cstring>
 #include <cstdio>
+#include <unistd.h> // for ssize_t
 
 // 重试次数
 static const int WEBDAV_MAX_RETRIES = 3;
@@ -62,11 +63,8 @@ WebDavChunkStore::WebDavChunkStore(const std::string &base_url_,
         return;
     }
 
-    // 你当前环境没有 ne_set_server_root，直接用请求里的 path
-    // 如果需要前缀，可以把 uri.path 拼进 make_path，这里先保持简单
-
+    // 环境里没有 ne_set_server_root，就让 make_path 负责完整路径
     if (!username.empty()) {
-        // 回调里用 this 取用户名密码，不需要额外分配/释放
         ne_set_server_auth(session, webdav_auth_callback, this);
     }
 
@@ -105,7 +103,7 @@ static bool webdav_mkcol(ne_session *sess, const std::string &path)
     int code = ne_get_status(req)->code;
     ne_request_destroy(req);
 
-    // 201 Created / 200 OK / 405 Method Not Allowed / 409 Conflict 都视为成功
+    // 201 / 200 / 405 / 409 都视为成功
     if (ret == NE_OK &&
         (code == 201 || code == 200 || code == 405 || code == 409))
         return true;
@@ -134,7 +132,6 @@ bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
             return 0;
         };
 
-        // 你的 neon 里没有 ne_set_request_body_reader，用 ne_add_response_body_reader
         ne_add_response_body_reader(req, ne_accept_2xx, write_cb, &out);
 
         int ret = ne_request_dispatch(req);
@@ -188,23 +185,18 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
             size_t left;
         } ctx{data.data(), data.size()};
 
-        auto reader_cb = [](void *userdata, char *buf, size_t buflen) -> ne_ssize_t {
+        auto reader_cb = [](void *userdata,
+                            char *buf,
+                            size_t buflen) -> ssize_t {
             auto *c = static_cast<BodyCtx *>(userdata);
             size_t n = (c->left < buflen) ? c->left : buflen;
             if (n == 0) return 0;
             std::memcpy(buf, c->ptr, n);
             c->ptr += n;
             c->left -= n;
-            return (ne_ssize_t)n;
+            return (ssize_t)n;
         };
 
-        // 你的 neon 版本的签名：
-        // void ne_set_request_body_provider(ne_request *req,
-        //                                   ne_off_t length,
-        //                                   ne_provide_body reader,
-        //                                   void *userdata);
-        //
-        // Content-Type 自己加 header
         ne_add_request_header(req, "Content-Type", "application/octet-stream");
         ne_set_request_body_provider(req,
                                      (ne_off_t)data.size(),

@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>
 #include "path_trie.h"
 
 class FileManager; // 前置声明

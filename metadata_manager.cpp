@@ -10,36 +10,33 @@ MetadataManager::MetadataManager() {}
 // 从 CloudRaidFS 内部文件加载元数据
 // ------------------------------------------------------------
 bool MetadataManager::load_from_backend(FileManager* fm) {
-    if (!fm->exists(META_PATH)) {
+    // 尝试读取一段上限数据，如果读不到就认为没有元数据
+    const uint64_t MAX_META_SIZE = 16ull * 1024 * 1024;
+
+    std::string data;
+    if (!fm->read(META_PATH, 0, MAX_META_SIZE, data)) {
         std::cerr << "MetadataManager: no metadata file, starting empty\n";
         return false;
     }
 
-    uint64_t size = fm->get_size(META_PATH);
-    if (size == 0) {
+    if (data.empty()) {
         std::cerr << "MetadataManager: metadata file empty\n";
         return false;
     }
 
-    std::string data;
-    if (!fm->read(META_PATH, 0, size, data)) {
-        std::cerr << "MetadataManager: failed to read metadata\n";
-        return false;
-    }
-
-    const char* p = data.data();
+    const char* p   = data.data();
     const char* end = p + data.size();
 
     auto read_u32 = [&](uint32_t& v) {
         if (p + 4 > end) return false;
-        memcpy(&v, p, 4);
+        std::memcpy(&v, p, 4);
         p += 4;
         return true;
     };
 
     auto read_u64 = [&](uint64_t& v) {
         if (p + 8 > end) return false;
-        memcpy(&v, p, 8);
+        std::memcpy(&v, p, 8);
         p += 8;
         return true;
     };
@@ -91,20 +88,24 @@ bool MetadataManager::save_to_backend(FileManager* fm) {
         data.append(reinterpret_cast<const char*>(&v), 8);
     };
 
-    write_u32(files.size());
+    uint32_t file_count = static_cast<uint32_t>(files.size());
+    write_u32(file_count);
 
-    for (auto& [path, meta] : files) {
-        uint32_t path_len = path.size();
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        const std::string& path = it->first;
+        const FileMeta& meta    = it->second;
+
+        uint32_t path_len = static_cast<uint32_t>(path.size());
         write_u32(path_len);
         data.append(path.data(), path_len);
 
         write_u64(meta.size);
 
-        uint32_t stripe_count = meta.stripes.size();
+        uint32_t stripe_count = static_cast<uint32_t>(meta.stripes.size());
         write_u32(stripe_count);
 
-        for (auto s : meta.stripes) {
-            write_u64(s);
+        for (size_t i = 0; i < meta.stripes.size(); ++i) {
+            write_u64(meta.stripes[i]);
         }
     }
 
