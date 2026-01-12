@@ -252,7 +252,7 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
         // 其他错误重试
     }
 
-    fprintf(stderr, "WebDavChunkStore::write_chunk: failed to write %s: %s\n", path.c_str(), ne_strerror(ne_errno(session)));
+    fprintf(stderr, "WebDavChunkStore::write_chunk: failed to write %s: %s\n", path.c_str());
     return false;
 }
 
