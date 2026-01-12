@@ -1,34 +1,74 @@
 #include "metadata_manager.h"
-#include <algorithm>
-#include <fstream>
+#include "file_manager.h"
+
+#include <cstring>
 #include <iostream>
-#include <nlohmann/json.hpp>
 
-using json = nlohmann::json;
+MetadataManager::MetadataManager() {}
 
-MetadataManager::MetadataManager() {
-    // 空构造
-}
-
-bool MetadataManager::load(const std::string& filename) {
-    std::ifstream f(filename);
-    if (!f.is_open()) {
-        std::cerr << "MetadataManager: metadata file not found, starting empty\n";
+// ------------------------------------------------------------
+// 从 CloudRaidFS 内部文件加载元数据
+// ------------------------------------------------------------
+bool MetadataManager::load_from_backend(FileManager* fm) {
+    if (!fm->exists(META_PATH)) {
+        std::cerr << "MetadataManager: no metadata file, starting empty\n";
         return false;
     }
 
-    json j;
-    f >> j;
+    uint64_t size = fm->get_size(META_PATH);
+    if (size == 0) {
+        std::cerr << "MetadataManager: metadata file empty\n";
+        return false;
+    }
+
+    std::string data;
+    if (!fm->read(META_PATH, 0, size, data)) {
+        std::cerr << "MetadataManager: failed to read metadata\n";
+        return false;
+    }
+
+    const char* p = data.data();
+    const char* end = p + data.size();
+
+    auto read_u32 = [&](uint32_t& v) {
+        if (p + 4 > end) return false;
+        memcpy(&v, p, 4);
+        p += 4;
+        return true;
+    };
+
+    auto read_u64 = [&](uint64_t& v) {
+        if (p + 8 > end) return false;
+        memcpy(&v, p, 8);
+        p += 8;
+        return true;
+    };
 
     files.clear();
-    trie = PathTrie(); // 重建 Trie
+    trie = PathTrie();
 
-    if (!j.contains("files")) return true;
+    uint32_t file_count = 0;
+    if (!read_u32(file_count)) return false;
 
-    for (auto& [path, meta] : j["files"].items()) {
+    for (uint32_t i = 0; i < file_count; i++) {
+        uint32_t path_len = 0;
+        if (!read_u32(path_len)) return false;
+
+        if (p + path_len > end) return false;
+        std::string path(p, path_len);
+        p += path_len;
+
         FileMeta fm;
-        fm.size = meta["size"].get<uint64_t>();
-        fm.stripes = meta["stripes"].get<std::vector<uint64_t>>();
+
+        if (!read_u64(fm.size)) return false;
+
+        uint32_t stripe_count = 0;
+        if (!read_u32(stripe_count)) return false;
+
+        fm.stripes.resize(stripe_count);
+        for (uint32_t j = 0; j < stripe_count; j++) {
+            if (!read_u64(fm.stripes[j])) return false;
+        }
 
         files[path] = fm;
         trie.insert(path);
@@ -37,27 +77,44 @@ bool MetadataManager::load(const std::string& filename) {
     return true;
 }
 
-bool MetadataManager::save(const std::string& filename) {
-    json j;
-    j["files"] = json::object();
+// ------------------------------------------------------------
+// 保存元数据到 CloudRaidFS 内部文件
+// ------------------------------------------------------------
+bool MetadataManager::save_to_backend(FileManager* fm) {
+    std::string data;
+
+    auto write_u32 = [&](uint32_t v) {
+        data.append(reinterpret_cast<const char*>(&v), 4);
+    };
+
+    auto write_u64 = [&](uint64_t v) {
+        data.append(reinterpret_cast<const char*>(&v), 8);
+    };
+
+    write_u32(files.size());
 
     for (auto& [path, meta] : files) {
-        j["files"][path] = {
-            {"size", meta.size},
-            {"stripes", meta.stripes}
-        };
+        uint32_t path_len = path.size();
+        write_u32(path_len);
+        data.append(path.data(), path_len);
+
+        write_u64(meta.size);
+
+        uint32_t stripe_count = meta.stripes.size();
+        write_u32(stripe_count);
+
+        for (auto s : meta.stripes) {
+            write_u64(s);
+        }
     }
 
-    std::ofstream f(filename);
-    if (!f.is_open()) {
-        std::cerr << "MetadataManager: failed to write metadata file\n";
-        return false;
-    }
-
-    f << j.dump(4);
-    return true;
+    // 写入 CloudRaidFS 内部文件
+    return fm->write(META_PATH, 0, data.data(), data.size());
 }
 
+// ------------------------------------------------------------
+// 基本操作
+// ------------------------------------------------------------
 bool MetadataManager::exists(const std::string& path) {
     return files.count(path) > 0;
 }
