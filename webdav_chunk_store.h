@@ -9,6 +9,8 @@
 
 class WebDavChunkStore : public ChunkStore {
 public:
+    std::string username;
+    std::string password;
     WebDavChunkStore(const std::string& base_url,
                      const std::string& username = "",
                      const std::string& password = "");
@@ -27,8 +29,6 @@ public:
 
 private:
     std::string base_url;
-    std::string username;
-    std::string password;
     ne_session* session;
     std::mutex mu;
 
