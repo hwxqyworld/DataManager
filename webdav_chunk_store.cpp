@@ -10,6 +10,26 @@
 // 重试次数
 static const int WEBDAV_MAX_RETRIES = 3;
 
+// 把相对路径挂到 root_path 下，比如 root="/dav" 时：
+//   rel="stripes"              → "/dav/stripes"
+//   rel="stripes/00000000"     → "/dav/stripes/00000000"
+//   rel="/already/has/slash"   → "/dav/already/has/slash"
+// 如果 root 为空，则保证返回以 "/" 开头的路径：
+//   rel="stripes"              → "/stripes"
+//   rel="/stripes"             → "/stripes"
+static std::string with_root(const std::string& root, const std::string& rel)
+{
+    if (root.empty()) {
+        if (!rel.empty() && rel[0] == '/')
+            return rel;
+        return "/" + rel;
+    } else {
+        if (!rel.empty() && rel[0] == '/')
+            return root + rel;
+        return root + "/" + rel;
+    }
+}
+
 // 认证回调，userdata 直接传 this
 static int webdav_auth_callback(void *userdata,
                                 const char *realm,
@@ -63,7 +83,22 @@ WebDavChunkStore::WebDavChunkStore(const std::string &base_url_,
         return;
     }
 
-    // 环境里没有 ne_set_server_root，就让 make_path 负责完整路径
+    // 从 base_url 中提取路径前缀，比如 "/dav"
+    // 存到成员 base_url 里，后续所有请求都走 with_root(base_url, ...)
+    if (uri.path && uri.path[0] != '\0') {
+        base_url = uri.path;
+        // 去掉末尾的 '/', 但保留单独一个 "/"
+        if (base_url.size() > 1 && base_url.back() == '/') {
+            base_url.pop_back();
+        }
+    } else {
+        base_url.clear(); // 没有前缀，就直接从根 "/stripes" 开始
+    }
+
+    if (!base_url.empty()) {
+        ne_set_server_root(session, base_url.c_str());
+    }
+
     if (!username.empty()) {
         ne_set_server_auth(session, webdav_auth_callback, this);
     }
@@ -81,7 +116,7 @@ WebDavChunkStore::~WebDavChunkStore()
     }
 }
 
-// 路径格式：stripes/%08lu/%02u.chunk
+// 路径格式：stripes/%08lu/%02u.chunk，加上 base_url 作为前缀
 std::string WebDavChunkStore::make_path(uint64_t stripe_id,
                                         uint32_t chunk_index) const
 {
@@ -90,7 +125,7 @@ std::string WebDavChunkStore::make_path(uint64_t stripe_id,
                   "stripes/%08lu/%02u.chunk",
                   (unsigned long)stripe_id,
                   (unsigned int)chunk_index);
-    return std::string(buf);
+    return with_root(base_url, buf);
 }
 
 // MKCOL 辅助函数
@@ -99,7 +134,7 @@ static bool webdav_mkcol(ne_session *sess, const std::string &path)
     ne_request *req = ne_request_create(sess, "MKCOL", path.c_str());
     if (!req) return false;
 
-    int ret = ne_request_dispatch(req);
+    int ret  = ne_request_dispatch(req);
     int code = ne_get_status(req)->code;
     ne_request_destroy(req);
 
@@ -134,7 +169,7 @@ bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
 
         ne_add_response_body_reader(req, ne_accept_2xx, write_cb, &out);
 
-        int ret = ne_request_dispatch(req);
+        int ret  = ne_request_dispatch(req);
         int code = ne_get_status(req)->code;
 
         ne_request_destroy(req);
@@ -157,18 +192,20 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
                                    uint32_t chunk_index,
                                    const std::string &data)
 {
-    // 先创建目录：stripes/ 和 stripes/<stripe_id>/
+    // 先创建目录：<root>/stripes/ 和 <root>/stripes/<stripe_id>/
     {
         std::lock_guard<std::mutex> lock(mu);
         if (!session) return false;
 
-        webdav_mkcol(session, "stripes");
+        std::string stripes_dir = with_root(base_url, "stripes");
+        webdav_mkcol(session, stripes_dir);
 
         char dirbuf[256];
         std::snprintf(dirbuf, sizeof(dirbuf),
                       "stripes/%08lu",
                       (unsigned long)stripe_id);
-        webdav_mkcol(session, dirbuf);
+        std::string stripe_dir = with_root(base_url, dirbuf);
+        webdav_mkcol(session, stripe_dir);
     }
 
     std::string path = make_path(stripe_id, chunk_index);
@@ -203,7 +240,7 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
                                      reader_cb,
                                      &ctx);
 
-        int ret = ne_request_dispatch(req);
+        int ret  = ne_request_dispatch(req);
         int code = ne_get_status(req)->code;
 
         ne_request_destroy(req);
@@ -229,7 +266,7 @@ bool WebDavChunkStore::delete_chunk(uint64_t stripe_id,
         ne_request *req = ne_request_create(session, "DELETE", path.c_str());
         if (!req) return false;
 
-        int ret = ne_request_dispatch(req);
+        int ret  = ne_request_dispatch(req);
         int code = ne_get_status(req)->code;
 
         ne_request_destroy(req);
