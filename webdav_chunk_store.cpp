@@ -121,8 +121,10 @@ std::string WebDavChunkStore::make_path(uint64_t stripe_id,
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "stripes/%08lu/%02u.chunk",
-                  (unsigned long)stripe_id,
+                  (unsigned long)stripe_id
+                  ,
                   (unsigned int)chunk_index);
+    fprintf(stderr, "WebDavChunkStore::make_path: %s\n", with_root(root_path, buf).c_str());
     return with_root(root_path, buf);
 }
 
@@ -131,6 +133,7 @@ static bool webdav_mkcol(ne_session *sess, const std::string &path)
 {
     ne_request *req = ne_request_create(sess, "MKCOL", path.c_str());
     if (!req) return false;
+    fprintf(stderr, "WebDavChunkStore::webdav_mkcol: MKCOL %s\n", path.c_str());
 
     int ret  = ne_request_dispatch(req);
     int code = ne_get_status(req)->code;
