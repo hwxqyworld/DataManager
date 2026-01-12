@@ -123,6 +123,7 @@ std::string WebDavChunkStore::make_path(uint64_t stripe_id,
                   "stripes/%08lu/%02u.chunk",
                   (unsigned long)stripe_id,
                   (unsigned int)chunk_index);
+    fprintf(stderr, "WebDavChunkStore::make_path: %s\n", with_root(root_path, buf).c_str());
     return with_root(root_path, buf);
 }
 
