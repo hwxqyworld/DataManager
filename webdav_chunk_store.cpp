@@ -83,21 +83,19 @@ WebDavChunkStore::WebDavChunkStore(const std::string &base_url_,
         return;
     }
 
-    // 从 base_url 中提取路径前缀，比如 "/dav"
-    // 存到成员 base_url 里，后续所有请求都走 with_root(base_url, ...)
     if (uri.path && uri.path[0] != '\0') {
-        base_url = uri.path;
+        root_path = uri.path;
         // 去掉末尾的 '/', 但保留单独一个 "/"
-        if (base_url.size() > 1 && base_url.back() == '/') {
-            base_url.pop_back();
+        if (root_path.size() > 1 && root_path.back() == '/') {
+            root_path.pop_back();
         }
     } else {
-        base_url.clear(); // 没有前缀，就直接从根 "/stripes" 开始
+        root_path.clear();
     }
-
-    if (!base_url.empty()) {
-        ne_set_server_root(session, base_url.c_str());
-    }
+    // base_url 只保留 scheme://host:port
+    char urlbuf[1024];
+    std::snprintf(urlbuf, sizeof(urlbuf), "%s://%s:%d", scheme, host, port);
+    base_url = urlbuf;
 
     if (!username.empty()) {
         ne_set_server_auth(session, webdav_auth_callback, this);
@@ -125,7 +123,7 @@ std::string WebDavChunkStore::make_path(uint64_t stripe_id,
                   "stripes/%08lu/%02u.chunk",
                   (unsigned long)stripe_id,
                   (unsigned int)chunk_index);
-    return with_root(base_url, buf);
+    return with_root(root_path, buf);
 }
 
 // MKCOL 辅助函数
@@ -197,14 +195,14 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
         std::lock_guard<std::mutex> lock(mu);
         if (!session) return false;
 
-        std::string stripes_dir = with_root(base_url, "stripes");
+        std::string stripes_dir = with_root(root_path, "stripes");
         webdav_mkcol(session, stripes_dir);
 
         char dirbuf[256];
         std::snprintf(dirbuf, sizeof(dirbuf),
                       "stripes/%08lu",
                       (unsigned long)stripe_id);
-        std::string stripe_dir = with_root(base_url, dirbuf);
+        std::string stripe_dir = with_root(root_path, dirbuf);
         webdav_mkcol(session, stripe_dir);
     }
 

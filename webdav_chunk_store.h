@@ -29,6 +29,7 @@ public:
 
 private:
     std::string base_url;
+    std::string root_path;
     ne_session* session;
     std::mutex mu;
 
