@@ -185,6 +185,7 @@ bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
         // 其他错误继续重试
     }
 
+    fprintf(stderr, "WebDavChunkStore::read_chunk: failed to read %s\n", path.c_str());
     return false;
 }
 
@@ -251,6 +252,7 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
         // 其他错误重试
     }
 
+    fprintf(stderr, "WebDavChunkStore::write_chunk: failed to write %s: %s\n", path.c_str(), ne_strerror(ne_errno(session)));
     return false;
 }
 
