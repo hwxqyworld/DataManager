@@ -98,6 +98,8 @@ WebDavChunkStore::WebDavChunkStore(const std::string &base_url_,
     base_url = urlbuf;
 
     if (!username.empty()) {
+        fprintf(stderr, "WebDavChunkStore: using authentication for user '%s', pass '%s'\n",
+                 username.c_str(), password.c_str());
         ne_set_server_auth(session, webdav_auth_callback, this);
     }
 
