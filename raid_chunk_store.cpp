@@ -115,9 +115,7 @@ bool RAIDChunkStore::read_chunk(uint64_t stripe_id,
     }
 
     if (ok_count < k) {
-        fprintf(stderr,
-                "RAIDChunkStore::read_chunk: stripe %lu 有效 chunk 数 %d < k=%d，无法恢复\n",
-                (unsigned long)stripe_id, ok_count, k);
+        // stripe 不存在或损坏，静默返回失败（首次启动时这是正常情况）
         return false;
     }
 

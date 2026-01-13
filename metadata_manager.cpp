@@ -23,16 +23,9 @@ bool MetadataManager::load_from_backend(FileManager* fm) {
     const uint64_t MAX_META_SIZE = 16ull * 1024 * 1024;
 
     std::string data;
-    if (!fm->read(META_PATH, 0, MAX_META_SIZE, data)) {
-        std::cerr << "MetadataManager: no metadata file, starting empty\n";
-        // 清空元数据文件的注册（保留 stripe 0）
-        files.clear();
-        trie = PathTrie();
-        return false;
-    }
-
-    if (data.empty()) {
-        std::cerr << "MetadataManager: metadata file empty\n";
+    if (!fm->read(META_PATH, 0, MAX_META_SIZE, data) || data.empty()) {
+        // 首次启动或读取失败，保持元数据文件的注册状态
+        // 清空其他文件，只保留元数据文件自身
         files.clear();
         trie = PathTrie();
         return false;

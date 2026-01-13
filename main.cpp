@@ -305,7 +305,11 @@ int main(int argc, char *argv[])
     g_fm   = std::make_shared<FileManager>(raid, g_meta);
 
     // 元数据存储在 CloudRaidFS 内部文件中
-    g_meta->load_from_backend(g_fm.get());
+    if (!g_meta->load_from_backend(g_fm.get())) {
+        // 首次启动或元数据损坏，初始化空的元数据文件
+        std::fprintf(stderr, "初始化新的元数据文件...\n");
+        g_meta->save_to_backend(g_fm.get());
+    }
 
     // 更新 next_stripe_id，避免与已有 stripe 冲突
     {
