@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 
 static std::shared_ptr<FileManager> g_fm;
 static std::shared_ptr<MetadataManager> g_meta;
@@ -305,6 +306,29 @@ int main(int argc, char *argv[])
 
     // 元数据存储在 CloudRaidFS 内部文件中
     g_meta->load_from_backend(g_fm.get());
+
+    // 更新 next_stripe_id，避免与已有 stripe 冲突
+    {
+        uint64_t max_stripe_id = 100;  // 保留 0-99 给元数据
+        std::function<void(const std::string&)> scan_stripes;
+        scan_stripes = [&](const std::string& dir) {
+            auto entries = g_meta->list_dir(dir);
+            for (const auto& name : entries) {
+                std::string full_path = (dir == "/") ? ("/" + name) : (dir + "/" + name);
+                if (g_meta->exists(full_path)) {
+                    const auto& stripes = g_meta->get_stripes(full_path);
+                    for (auto sid : stripes) {
+                        if (sid >= max_stripe_id) {
+                            max_stripe_id = sid + 1;
+                        }
+                    }
+                }
+                scan_stripes(full_path);
+            }
+        };
+        scan_stripes("/");
+        raid->set_next_stripe_id(max_stripe_id);
+    }
 
     // ------------------------------------------------------------
     // 构造 FUSE 参数

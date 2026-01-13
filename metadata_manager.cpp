@@ -10,17 +10,31 @@ MetadataManager::MetadataManager() {}
 // 从 CloudRaidFS 内部文件加载元数据
 // ------------------------------------------------------------
 bool MetadataManager::load_from_backend(FileManager* fm) {
+    // 首先注册元数据文件自身（使用保留的 stripe 0）
+    // 这样 FileManager::read 才能找到正确的 stripe
+    if (!exists(META_PATH)) {
+        create_file(META_PATH);
+    }
+    files[META_PATH].stripes.clear();
+    files[META_PATH].stripes.push_back(0);  // 保留 stripe 0 给元数据文件
+    files[META_PATH].size = 16ULL * 1024 * 1024;  // 先设置一个足够大的值
+
     // 尝试读取一段上限数据，如果读不到就认为没有元数据
     const uint64_t MAX_META_SIZE = 16ull * 1024 * 1024;
 
     std::string data;
     if (!fm->read(META_PATH, 0, MAX_META_SIZE, data)) {
         std::cerr << "MetadataManager: no metadata file, starting empty\n";
+        // 清空元数据文件的注册（保留 stripe 0）
+        files.clear();
+        trie = PathTrie();
         return false;
     }
 
     if (data.empty()) {
         std::cerr << "MetadataManager: metadata file empty\n";
+        files.clear();
+        trie = PathTrie();
         return false;
     }
 
@@ -55,19 +69,19 @@ bool MetadataManager::load_from_backend(FileManager* fm) {
         std::string path(p, path_len);
         p += path_len;
 
-        FileMeta fm;
+        FileMeta meta;
 
-        if (!read_u64(fm.size)) return false;
+        if (!read_u64(meta.size)) return false;
 
         uint32_t stripe_count = 0;
         if (!read_u32(stripe_count)) return false;
 
-        fm.stripes.resize(stripe_count);
+        meta.stripes.resize(stripe_count);
         for (uint32_t j = 0; j < stripe_count; j++) {
-            if (!read_u64(fm.stripes[j])) return false;
+            if (!read_u64(meta.stripes[j])) return false;
         }
 
-        files[path] = fm;
+        files[path] = meta;
         trie.insert(path);
     }
 
@@ -88,12 +102,23 @@ bool MetadataManager::save_to_backend(FileManager* fm) {
         data.append(reinterpret_cast<const char*>(&v), 8);
     };
 
-    uint32_t file_count = static_cast<uint32_t>(files.size());
+    // 排除元数据文件自身，只序列化用户文件
+    uint32_t file_count = 0;
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        if (it->first != META_PATH) {
+            file_count++;
+        }
+    }
     write_u32(file_count);
 
     for (auto it = files.begin(); it != files.end(); ++it) {
         const std::string& path = it->first;
         const FileMeta& meta    = it->second;
+
+        // 跳过元数据文件自身
+        if (path == META_PATH) {
+            continue;
+        }
 
         uint32_t path_len = static_cast<uint32_t>(path.size());
         write_u32(path_len);
@@ -108,6 +133,24 @@ bool MetadataManager::save_to_backend(FileManager* fm) {
             write_u64(meta.stripes[i]);
         }
     }
+
+    // 确保元数据文件已注册（使用保留的 stripe ID）
+    if (!exists(META_PATH)) {
+        create_file(META_PATH);
+    }
+    // 清空旧的 stripe 列表，重新分配保留的 stripe
+    files[META_PATH].stripes.clear();
+    
+    // 计算需要多少个 stripe（每个 stripe 4MB）
+    const uint64_t STRIPE_SIZE = 4ULL * 1024 * 1024;
+    uint64_t num_stripes = (data.size() + STRIPE_SIZE - 1) / STRIPE_SIZE;
+    if (num_stripes == 0) num_stripes = 1;
+    
+    // 使用保留的 stripe ID（从 0 开始）
+    for (uint64_t i = 0; i < num_stripes; ++i) {
+        files[META_PATH].stripes.push_back(i);  // 保留 stripe 0, 1, 2, ...
+    }
+    files[META_PATH].size = data.size();
 
     // 写入 CloudRaidFS 内部文件
     return fm->write(META_PATH, 0, data.data(), data.size());
