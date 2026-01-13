@@ -1,285 +1,288 @@
 #include "webdav_chunk_store.h"
 
-#include <neon/ne_auth.h>
-#include <neon/ne_uri.h>
-#include <neon/ne_utils.h>
 #include <cstring>
 #include <cstdio>
-#include <unistd.h> // for ssize_t
 
 // 重试次数
 static const int WEBDAV_MAX_RETRIES = 3;
 
-// 把相对路径挂到 root_path 下，比如 root="/dav" 时：
-//   rel="stripes"              → "/dav/stripes"
-//   rel="stripes/00000000"     → "/dav/stripes/00000000"
-//   rel="/already/has/slash"   → "/dav/already/has/slash"
-// 如果 root 为空，则保证返回以 "/" 开头的路径：
-//   rel="stripes"              → "/stripes"
-//   rel="/stripes"             → "/stripes"
-static std::string with_root(const std::string& root, const std::string& rel)
+// CURL 写回调 - 将响应数据写入 std::string
+static size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
-    if (root.empty()) {
-        if (!rel.empty() && rel[0] == '/')
-            return rel;
-        return "/" + rel;
-    } else {
-        if (!rel.empty() && rel[0] == '/')
-            return root + rel;
-        return root + "/" + rel;
-    }
+    size_t total = size * nmemb;
+    auto* str = static_cast<std::string*>(userdata);
+    str->append(ptr, total);
+    return total;
 }
 
-// 认证回调，userdata 直接传 this
-static int webdav_auth_callback(void *userdata,
-                                const char *realm,
-                                int attempts,
-                                char *username,
-                                char *password)
+// CURL 读回调 - 从 std::string 读取数据用于 PUT
+struct ReadContext {
+    const char* ptr;
+    size_t left;
+};
+
+static size_t read_callback(char* buffer, size_t size, size_t nmemb, void* userdata)
 {
-    (void)realm;
-    (void)attempts;
-
-    if (!userdata) return 1;
-
-    auto *self = static_cast<WebDavChunkStore *>(userdata);
-
-    std::snprintf(username, NE_ABUFSIZ, "%s", self->username.c_str());
-    std::snprintf(password, NE_ABUFSIZ, "%s", self->password.c_str());
-
-    return 0;
+    auto* ctx = static_cast<ReadContext*>(userdata);
+    size_t max_copy = size * nmemb;
+    size_t to_copy = (ctx->left < max_copy) ? ctx->left : max_copy;
+    
+    if (to_copy == 0) return 0;
+    
+    std::memcpy(buffer, ctx->ptr, to_copy);
+    ctx->ptr += to_copy;
+    ctx->left -= to_copy;
+    
+    return to_copy;
 }
 
 // 构造函数
-WebDavChunkStore::WebDavChunkStore(const std::string &base_url_,
-                                   const std::string &user,
-                                   const std::string &pass)
+WebDavChunkStore::WebDavChunkStore(const std::string& base_url_,
+                                   const std::string& user,
+                                   const std::string& pass)
     : base_url(base_url_),
       username(user),
-      password(pass),
-      session(nullptr)
+      password(pass)
 {
-    if (!base_url.empty() && base_url.back() != '/')
+    // 确保 base_url 以 / 结尾
+    if (!base_url.empty() && base_url.back() != '/') {
         base_url += '/';
-
-    ne_uri uri;
-    if (ne_uri_parse(base_url.c_str(), &uri) != 0) {
-        std::fprintf(stderr, "WebDavChunkStore: invalid base_url: %s\n",
-                     base_url.c_str());
-        std::memset(&uri, 0, sizeof(uri));
-        return;
     }
-
-    const char *scheme = uri.scheme ? uri.scheme : "http";
-    bool use_ssl = std::strcmp(scheme, "https") == 0;
-
-    const char *host = uri.host ? uri.host : "localhost";
-    int port = uri.port ? uri.port : (use_ssl ? 443 : 80);
-
-    session = ne_session_create(scheme, host, port);
-    if (!session) {
-        std::fprintf(stderr, "WebDavChunkStore: failed to create session\n");
-        ne_uri_free(&uri);
-        return;
-    }
-
-    if (uri.path && uri.path[0] != '\0') {
-        root_path = uri.path;
-        // 去掉末尾的 '/', 但保留单独一个 "/"
-        if (root_path.size() > 1 && root_path.back() == '/') {
-            root_path.pop_back();
-        }
-    } else {
-        root_path.clear();
-    }
-    // base_url 只保留 scheme://host:port
-    char urlbuf[1024];
-    std::snprintf(urlbuf, sizeof(urlbuf), "%s://%s:%d", scheme, host, port);
-    base_url = urlbuf;
-
-    if (!username.empty()) {
-        fprintf(stderr, "WebDavChunkStore: using authentication for user '%s', pass '%s'\n",
-                 username.c_str(), password.c_str());
-        ne_set_server_auth(session, webdav_auth_callback, this);
-    }
-
-    ne_uri_free(&uri);
+    
+    // 全局初始化 curl（只需一次，但多次调用也安全）
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    
+    std::fprintf(stderr, "WebDavChunkStore: initialized with URL=%s, user=%s\n",
+                 base_url.c_str(), username.c_str());
 }
 
 // 析构函数
 WebDavChunkStore::~WebDavChunkStore()
 {
-    std::lock_guard<std::mutex> lock(mu);
-    if (session) {
-        ne_session_destroy(session);
-        session = nullptr;
+    // 注意：curl_global_cleanup() 应该在程序退出时调用一次
+    // 这里不调用，因为可能有多个实例
+}
+
+// 设置 CURL 认证选项
+void WebDavChunkStore::setup_curl_auth(CURL* curl)
+{
+    if (!username.empty()) {
+        // 设置用户名和密码
+        curl_easy_setopt(curl, CURLOPT_USERNAME, username.c_str());
+        curl_easy_setopt(curl, CURLOPT_PASSWORD, password.c_str());
+        
+        // 使用 Basic 和 Digest 认证（自动选择）
+        curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC | CURLAUTH_DIGEST);
     }
+    
+    // 通用设置
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    
+    // 禁用 SSL 验证（生产环境应该启用）
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 }
 
-// 路径格式：stripes/%08lu/%02u.chunk，加上 base_url 作为前缀
-std::string WebDavChunkStore::make_path(uint64_t stripe_id,
-                                        uint32_t chunk_index) const
+// 构建完整 URL
+std::string WebDavChunkStore::make_url(uint64_t stripe_id, uint32_t chunk_index) const
 {
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "stripes/%08lu/%02u.chunk",
-                  (unsigned long)stripe_id
-                  ,
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "%sstripes/%08lu/%02u.chunk",
+                  base_url.c_str(),
+                  (unsigned long)stripe_id,
                   (unsigned int)chunk_index);
-    fprintf(stderr, "WebDavChunkStore::make_path: %s\n", with_root(root_path, buf).c_str());
-    return with_root(root_path, buf);
+    return std::string(buf);
 }
 
-// MKCOL 辅助函数
-static bool webdav_mkcol(ne_session *sess, const std::string &path)
+// 构建目录 URL
+std::string WebDavChunkStore::make_dir_url(const std::string& rel_path) const
 {
-    ne_request *req = ne_request_create(sess, "MKCOL", path.c_str());
-    if (!req) return false;
-    fprintf(stderr, "WebDavChunkStore::webdav_mkcol: MKCOL %s\n", path.c_str());
+    std::string url = base_url + rel_path;
+    // if (!url.empty() && url.back() != '/') {
+    //     url += '/';
+    // }
+    return url;
+}
 
-    int ret  = ne_request_dispatch(req);
-    int code = ne_get_status(req)->code;
-    ne_request_destroy(req);
-
-    // 201 / 200 / 405 / 409 都视为成功
-    if (ret == NE_OK &&
-        (code == 201 || code == 200 || code == 405 || code == 409))
+// WebDAV MKCOL 创建目录
+bool WebDavChunkStore::mkcol(const std::string& url)
+{
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    
+    setup_curl_auth(curl);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "MKCOL");
+    
+    // 忽略响应体
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    std::string response;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    
+    curl_easy_cleanup(curl);
+    
+    // 201 Created, 200 OK, 405 Method Not Allowed (已存在), 409 Conflict (父目录问题但可能已存在)
+    if (res == CURLE_OK && (http_code == 201 || http_code == 200 || 
+                            http_code == 405 || http_code == 409)) {
         return true;
-
+    }
+    
+    std::fprintf(stderr, "WebDavChunkStore::mkcol: %s failed, HTTP %ld, curl %d\n",
+                 url.c_str(), http_code, (int)res);
     return false;
 }
 
 // 读取 chunk
 bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
                                   uint32_t chunk_index,
-                                  std::string &out)
+                                  std::string& out)
 {
-    std::string path = make_path(stripe_id, chunk_index);
-
+    std::string url = make_url(stripe_id, chunk_index);
+    
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
         std::lock_guard<std::mutex> lock(mu);
-        if (!session) return false;
-
-        ne_request *req = ne_request_create(session, "GET", path.c_str());
-        if (!req) return false;
-
+        
+        CURL* curl = curl_easy_init();
+        if (!curl) return false;
+        
         out.clear();
-        auto write_cb = [](void *userdata, const char *buf, size_t len) -> int {
-            auto *str = static_cast<std::string *>(userdata);
-            str->append(buf, len);
-            return 0;
-        };
-
-        ne_add_response_body_reader(req, ne_accept_2xx, write_cb, &out);
-
-        int ret  = ne_request_dispatch(req);
-        int code = ne_get_status(req)->code;
-
-        ne_request_destroy(req);
-
-        if (ret == NE_OK && code >= 200 && code < 300)
+        
+        setup_curl_auth(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+        
+        CURLcode res = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        
+        curl_easy_cleanup(curl);
+        
+        if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
             return true;
-
-        if (code == 404) {
+        }
+        
+        if (http_code == 404) {
             out.clear();
             return false;
         }
-        // 其他错误继续重试
+        
+        std::fprintf(stderr, "WebDavChunkStore::read_chunk: %s attempt %d failed, HTTP %ld\n",
+                     url.c_str(), attempt + 1, http_code);
     }
-
-    fprintf(stderr, "WebDavChunkStore::read_chunk: failed to read %s\n", path.c_str());
+    
+    std::fprintf(stderr, "WebDavChunkStore::read_chunk: %s failed after %d retries\n",
+                 url.c_str(), WEBDAV_MAX_RETRIES);
     return false;
 }
 
 // 写入 chunk
 bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
                                    uint32_t chunk_index,
-                                   const std::string &data)
+                                   const std::string& data)
 {
-    // 先创建目录：<root>/stripes/ 和 <root>/stripes/<stripe_id>/
+    // 先创建目录
     {
         std::lock_guard<std::mutex> lock(mu);
-        if (!session) return false;
-
-        std::string stripes_dir = with_root(root_path, "stripes");
-        webdav_mkcol(session, stripes_dir);
-
+        
+        std::string stripes_url = make_dir_url("stripes");
+        mkcol(stripes_url);
+        
         char dirbuf[256];
-        std::snprintf(dirbuf, sizeof(dirbuf),
-                      "stripes/%08lu",
-                      (unsigned long)stripe_id);
-        std::string stripe_dir = with_root(root_path, dirbuf);
-        webdav_mkcol(session, stripe_dir);
+        std::snprintf(dirbuf, sizeof(dirbuf), "stripes/%08lu", (unsigned long)stripe_id);
+        std::string stripe_url = make_dir_url(dirbuf);
+        mkcol(stripe_url);
     }
-
-    std::string path = make_path(stripe_id, chunk_index);
-
+    
+    std::string url = make_url(stripe_id, chunk_index);
+    
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
         std::lock_guard<std::mutex> lock(mu);
-        if (!session) return false;
-
-        ne_request *req = ne_request_create(session, "PUT", path.c_str());
-        if (!req) return false;
-
-        struct BodyCtx {
-            const char *ptr;
-            size_t left;
-        } ctx{data.data(), data.size()};
-
-        auto reader_cb = [](void *userdata,
-                            char *buf,
-                            size_t buflen) -> ssize_t {
-            auto *c = static_cast<BodyCtx *>(userdata);
-            size_t n = (c->left < buflen) ? c->left : buflen;
-            if (n == 0) return 0;
-            std::memcpy(buf, c->ptr, n);
-            c->ptr += n;
-            c->left -= n;
-            return (ssize_t)n;
-        };
-
-        ne_add_request_header(req, "Content-Type", "application/octet-stream");
-        ne_set_request_body_provider(req,
-                                     (ne_off_t)data.size(),
-                                     reader_cb,
-                                     &ctx);
-
-        int ret  = ne_request_dispatch(req);
-        int code = ne_get_status(req)->code;
-
-        ne_request_destroy(req);
-
-        if (ret == NE_OK && code >= 200 && code < 300)
+        
+        CURL* curl = curl_easy_init();
+        if (!curl) return false;
+        
+        ReadContext ctx{data.data(), data.size()};
+        
+        setup_curl_auth(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+        curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
+        curl_easy_setopt(curl, CURLOPT_READDATA, &ctx);
+        curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)data.size());
+        
+        // 设置 Content-Type
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/octet-stream");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        
+        // 忽略响应体
+        std::string response;
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        
+        CURLcode res = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        
+        if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
             return true;
-        // 其他错误重试
+        }
+        
+        std::fprintf(stderr, "WebDavChunkStore::write_chunk: %s attempt %d failed, HTTP %ld, curl %d\n",
+                     url.c_str(), attempt + 1, http_code, (int)res);
     }
-
-    fprintf(stderr, "WebDavChunkStore::write_chunk: failed to write %s: %s\n", path.c_str());
+    
+    std::fprintf(stderr, "WebDavChunkStore::write_chunk: %s failed after %d retries\n",
+                 url.c_str(), WEBDAV_MAX_RETRIES);
     return false;
 }
 
-// 删除 chunk（不管目录）
-bool WebDavChunkStore::delete_chunk(uint64_t stripe_id,
-                                    uint32_t chunk_id)
+// 删除 chunk
+bool WebDavChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
 {
-    std::string path = make_path(stripe_id, chunk_id);
-
+    std::string url = make_url(stripe_id, chunk_id);
+    
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
         std::lock_guard<std::mutex> lock(mu);
-        if (!session) return false;
-
-        ne_request *req = ne_request_create(session, "DELETE", path.c_str());
-        if (!req) return false;
-
-        int ret  = ne_request_dispatch(req);
-        int code = ne_get_status(req)->code;
-
-        ne_request_destroy(req);
-
-        // 200 / 204 正常删除，404 当作已经不存在也算成功
-        if (ret == NE_OK && (code == 200 || code == 204 || code == 404))
+        
+        CURL* curl = curl_easy_init();
+        if (!curl) return false;
+        
+        setup_curl_auth(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+        
+        // 忽略响应体
+        std::string response;
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        
+        CURLcode res = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        
+        curl_easy_cleanup(curl);
+        
+        // 200 OK, 204 No Content, 404 Not Found (已不存在)
+        if (res == CURLE_OK && (http_code == 200 || http_code == 204 || http_code == 404)) {
             return true;
+        }
+        
+        std::fprintf(stderr, "WebDavChunkStore::delete_chunk: %s attempt %d failed, HTTP %ld\n",
+                     url.c_str(), attempt + 1, http_code);
     }
-
+    
     return false;
 }
