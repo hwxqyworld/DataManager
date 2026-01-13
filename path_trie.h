@@ -21,6 +21,31 @@ public:
         free_node(root);
     }
 
+    // 禁用拷贝（避免浅拷贝导致的段错误）
+    PathTrie(const PathTrie&) = delete;
+    PathTrie& operator=(const PathTrie&) = delete;
+
+    // 移动构造
+    PathTrie(PathTrie&& other) noexcept : root(other.root) {
+        other.root = new Node();
+    }
+
+    // 移动赋值
+    PathTrie& operator=(PathTrie&& other) noexcept {
+        if (this != &other) {
+            free_node(root);
+            root = other.root;
+            other.root = new Node();
+        }
+        return *this;
+    }
+
+    // 清空 trie
+    void clear() {
+        free_node(root);
+        root = new Node();
+    }
+
     // 插入路径，例如 "/sub/a.txt"
     void insert(const std::string& path) {
         std::vector<std::string> parts = split(path);
@@ -66,6 +91,7 @@ private:
 
     // 释放节点
     void free_node(Node* n) {
+        if (!n) return;
         for (auto& kv : n->children) {
             free_node(kv.second);
         }

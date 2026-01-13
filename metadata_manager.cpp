@@ -27,7 +27,7 @@ bool MetadataManager::load_from_backend(FileManager* fm) {
         // 首次启动或读取失败，保持元数据文件的注册状态
         // 清空其他文件，只保留元数据文件自身
         files.clear();
-        trie = PathTrie();
+        trie.clear();
         return false;
     }
 
@@ -49,7 +49,7 @@ bool MetadataManager::load_from_backend(FileManager* fm) {
     };
 
     files.clear();
-    trie = PathTrie();
+    trie.clear();
 
     uint32_t file_count = 0;
     if (!read_u32(file_count)) return false;
@@ -194,5 +194,10 @@ void MetadataManager::add_stripe(const std::string& path, uint64_t stripe_id) {
 }
 
 const std::vector<uint64_t>& MetadataManager::get_stripes(const std::string& path) {
-    return files[path].stripes;
+    static const std::vector<uint64_t> empty_stripes;
+    auto it = files.find(path);
+    if (it == files.end()) {
+        return empty_stripes;
+    }
+    return it->second.stripes;
 }

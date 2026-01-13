@@ -54,17 +54,20 @@ bool FileManager::write_stripe(uint64_t stripe_id, const std::string &data) {
 // 确保 stripe 存在，不存在则分配
 // ------------------------------------------------------------
 uint64_t FileManager::ensure_stripe(const std::string &path, uint64_t stripe_index) {
-    auto &stripes = meta->get_stripes(path);
+    const auto &stripes = meta->get_stripes(path);
 
     // stripe 已存在
     if (stripe_index < stripes.size()) {
         return stripes[stripe_index];
     }
 
-    // stripe 不存在 → 分配新 stripe_id
-    uint64_t new_id = raid->allocate_new_stripe();
-    meta->add_stripe(path, new_id);
-    return new_id;
+    // stripe 不存在 → 分配新 stripe_id 并添加到文件
+    // 注意：可能需要填充中间的 stripe
+    while (meta->get_stripes(path).size() <= stripe_index) {
+        uint64_t new_id = raid->allocate_new_stripe();
+        meta->add_stripe(path, new_id);
+    }
+    return meta->get_stripes(path)[stripe_index];
 }
 
 // ------------------------------------------------------------
