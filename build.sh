@@ -56,18 +56,6 @@ else
 fi
 
 # -----------------------------
-# 检查 neon
-# -----------------------------
-if pkg-config --exists neon; then
-    NEON_CFLAGS=$(pkg-config --cflags neon)
-    NEON_LIBS=$(pkg-config --libs neon)
-else
-    echo -e "${RED}错误: 未找到 neon 开发包${NC}"
-    echo "Ubuntu: sudo apt install libneon27-dev"
-    exit 1
-fi
-
-# -----------------------------
 # 源文件列表（自动扫描）
 # -----------------------------
 SRC=$(ls *.cpp)
@@ -128,8 +116,7 @@ $CXX $CXXFLAGS \
     $SRC \
     -o "$OUT" \
     $FUSE_LIBS \
-    $NEON_CFLAGS \
-    $NEON_LIBS \
+    -lcurl \
     -lpthread \
     -std=c++14
 
