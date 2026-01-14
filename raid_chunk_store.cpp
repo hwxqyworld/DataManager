@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <future>
 #include <cinttypes>
+#include <atomic>
+#include <thread>
 
 // 构造函数
 RAIDChunkStore::RAIDChunkStore(std::vector<std::shared_ptr<ChunkStore>> backends,
@@ -102,19 +104,29 @@ bool RAIDChunkStore::read_chunk(uint64_t stripe_id,
 
     std::vector<std::string> chunks(k + m);
     std::vector<bool> present(k + m, false);
-    int ok_count = 0;
+    std::atomic<int> ok_count{0};
 
-    // 尝试读取所有 chunk
+    // 并发读取所有 chunk
+    std::vector<std::future<void>> tasks;
+    tasks.reserve(k + m);
+
     for (int i = 0; i < k + m; i++) {
-        std::string buf;
-        if (backends[i]->read_chunk(stripe_id, (uint32_t)i, buf) && !buf.empty()) {
-            chunks[i] = std::move(buf);
-            present[i] = true;
-            ok_count++;
-        }
+        tasks.push_back(std::async(std::launch::async, [this, &chunks, &present, &ok_count, stripe_id, i]() {
+            std::string buf;
+            if (backends[i]->read_chunk(stripe_id, (uint32_t)i, buf) && !buf.empty()) {
+                chunks[i] = std::move(buf);
+                present[i] = true;
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }));
     }
 
-    if (ok_count < k) {
+    // 等待所有读取完成
+    for (auto &t : tasks) {
+        t.get();
+    }
+
+    if (ok_count.load() < k) {
         // stripe 不存在或损坏，静默返回失败（首次启动时这是正常情况）
         return false;
     }
@@ -125,23 +137,32 @@ bool RAIDChunkStore::read_chunk(uint64_t stripe_id,
         return false;
     }
 
-    // 自动修复缺失 chunk（后台补写）
-    repair_missing_chunks(stripe_id, present, out);
+    // 自动修复缺失 chunk（后台异步执行，不阻塞返回）
+    std::thread([this, stripe_id, present, out]() {
+        repair_missing_chunks(stripe_id, present, out);
+    }).detach();
 
     return true;
 }
 
-// 删除条带：删除所有 chunk
+// 删除条带：并发删除所有 chunk
 bool RAIDChunkStore::delete_chunk(uint64_t stripe_id,
                                   uint32_t chunk_id)
 {
     (void)chunk_id; // 暂不使用
 
-    bool ok = true;
+    std::vector<std::future<bool>> tasks;
+    tasks.reserve(k + m);
+
     for (int i = 0; i < k + m; i++) {
-        if (!backends[i]->delete_chunk(stripe_id, (uint32_t)i)) {
-            ok = false;
-        }
+        tasks.push_back(std::async(std::launch::async, [this, stripe_id, i]() {
+            return backends[i]->delete_chunk(stripe_id, (uint32_t)i);
+        }));
+    }
+
+    bool ok = true;
+    for (auto &t : tasks) {
+        if (!t.get()) ok = false;
     }
     return ok;
 }

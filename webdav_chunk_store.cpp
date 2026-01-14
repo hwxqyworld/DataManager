@@ -42,7 +42,8 @@ WebDavChunkStore::WebDavChunkStore(const std::string& base_url_,
                                    const std::string& pass)
     : base_url(base_url_),
       username(user),
-      password(pass)
+      password(pass),
+      curl_pool_(16)  // 连接池大小
 {
     // 确保 base_url 以 / 结尾
     if (!base_url.empty() && base_url.back() != '/') {
@@ -75,10 +76,15 @@ void WebDavChunkStore::setup_curl_auth(CURL* curl)
         curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC | CURLAUTH_DIGEST);
     }
     
-    // 通用设置
+    // 通用设置 - 降低超时时间以提高响应速度
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);        // 从 60 降到 30
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L); // 从 30 降到 10
+    
+    // 启用 TCP keepalive
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
     
     // 禁用 SSL 验证（生产环境应该启用）
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
@@ -100,18 +106,12 @@ std::string WebDavChunkStore::make_url(uint64_t stripe_id, uint32_t chunk_index)
 std::string WebDavChunkStore::make_dir_url(const std::string& rel_path) const
 {
     std::string url = base_url + rel_path;
-    // if (!url.empty() && url.back() != '/') {
-    //     url += '/';
-    // }
     return url;
 }
 
 // WebDAV MKCOL 创建目录
-bool WebDavChunkStore::mkcol(const std::string& url)
+bool WebDavChunkStore::mkcol(CURL* curl, const std::string& url)
 {
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-    
     setup_curl_auth(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "MKCOL");
@@ -126,8 +126,6 @@ bool WebDavChunkStore::mkcol(const std::string& url)
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     
-    curl_easy_cleanup(curl);
-    
     // 201 Created, 200 OK, 405 Method Not Allowed (已存在), 409 Conflict (父目录问题但可能已存在)
     if (res == CURLE_OK && (http_code == 201 || http_code == 200 || 
                             http_code == 405 || http_code == 409)) {
@@ -139,6 +137,46 @@ bool WebDavChunkStore::mkcol(const std::string& url)
     return false;
 }
 
+// 确保 stripe 目录存在（带缓存）
+void WebDavChunkStore::ensure_stripe_dir(uint64_t stripe_id)
+{
+    // 快速检查是否已创建
+    {
+        std::lock_guard<std::mutex> lock(dir_cache_mu_);
+        if (created_stripe_dirs_.count(stripe_id) > 0) {
+            return;  // 已创建，直接返回
+        }
+    }
+    
+    // 需要创建目录
+    CurlHandle curl(curl_pool_);
+    
+    // 确保 stripes 根目录存在
+    {
+        std::lock_guard<std::mutex> lock(dir_cache_mu_);
+        if (!stripes_dir_created_) {
+            std::string stripes_url = make_dir_url("stripes");
+            mkcol(curl, stripes_url);
+            stripes_dir_created_ = true;
+        }
+    }
+    
+    // 创建 stripe 目录
+    char dirbuf[256];
+    std::snprintf(dirbuf, sizeof(dirbuf), "stripes/%08lu", (unsigned long)stripe_id);
+    std::string stripe_url = make_dir_url(dirbuf);
+    
+    // 重置 curl 句柄
+    curl_easy_reset(curl.get());
+    mkcol(curl, stripe_url);
+    
+    // 记录已创建
+    {
+        std::lock_guard<std::mutex> lock(dir_cache_mu_);
+        created_stripe_dirs_.insert(stripe_id);
+    }
+}
+
 // 读取 chunk
 bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
                                   uint32_t chunk_index,
@@ -147,10 +185,7 @@ bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
     std::string url = make_url(stripe_id, chunk_index);
     
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
-        std::lock_guard<std::mutex> lock(mu);
-        
-        CURL* curl = curl_easy_init();
-        if (!curl) return false;
+        CurlHandle curl(curl_pool_);
         
         out.clear();
         
@@ -163,8 +198,6 @@ bool WebDavChunkStore::read_chunk(uint64_t stripe_id,
         CURLcode res = curl_easy_perform(curl);
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        
-        curl_easy_cleanup(curl);
         
         if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
             return true;
@@ -189,26 +222,13 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
                                    uint32_t chunk_index,
                                    const std::string& data)
 {
-    // 先创建目录
-    {
-        std::lock_guard<std::mutex> lock(mu);
-        
-        std::string stripes_url = make_dir_url("stripes");
-        mkcol(stripes_url);
-        
-        char dirbuf[256];
-        std::snprintf(dirbuf, sizeof(dirbuf), "stripes/%08lu", (unsigned long)stripe_id);
-        std::string stripe_url = make_dir_url(dirbuf);
-        mkcol(stripe_url);
-    }
+    // 确保目录存在（带缓存）
+    ensure_stripe_dir(stripe_id);
     
     std::string url = make_url(stripe_id, chunk_index);
     
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
-        std::lock_guard<std::mutex> lock(mu);
-        
-        CURL* curl = curl_easy_init();
-        if (!curl) return false;
+        CurlHandle curl(curl_pool_);
         
         ReadContext ctx{data.data(), data.size()};
         
@@ -234,7 +254,6 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
         
         if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
             return true;
@@ -255,10 +274,7 @@ bool WebDavChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
     std::string url = make_url(stripe_id, chunk_id);
     
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
-        std::lock_guard<std::mutex> lock(mu);
-        
-        CURL* curl = curl_easy_init();
-        if (!curl) return false;
+        CurlHandle curl(curl_pool_);
         
         setup_curl_auth(curl);
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -272,8 +288,6 @@ bool WebDavChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
         CURLcode res = curl_easy_perform(curl);
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        
-        curl_easy_cleanup(curl);
         
         // 200 OK, 204 No Content, 404 Not Found (已不存在)
         if (res == CURLE_OK && (http_code == 200 || http_code == 204 || http_code == 404)) {
