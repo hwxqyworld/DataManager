@@ -48,12 +48,14 @@ static int raidfs_getattr(const char *path, struct stat *stbuf,
         return -ENOENT;
     }
 
+    // 根目录
     if (p == "/") {
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
         return 0;
     }
 
+    // 检查是否是文件
     if (g_meta->exists(p)) {
         stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
@@ -61,8 +63,8 @@ static int raidfs_getattr(const char *path, struct stat *stbuf,
         return 0;
     }
 
-    auto children = g_meta->list_dir(p);
-    if (!children.empty()) {
+    // 检查是否是目录
+    if (g_meta->is_dir(p)) {
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
         return 0;
@@ -84,13 +86,15 @@ static int raidfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     std::string p(path);
 
-    auto list = g_meta->list_dir(p);
-    if (list.empty() && p != "/")
+    // 检查目录是否存在
+    if (p != "/" && !g_meta->is_dir(p)) {
         return -ENOENT;
+    }
 
     filler(buf, ".", nullptr, 0, FUSE_FILL_DIR_PLUS);
     filler(buf, "..", nullptr, 0, FUSE_FILL_DIR_PLUS);
 
+    auto list = g_meta->list_dir(p);
     for (auto &name : list) {
         // 不把内部元数据文件暴露出来
         if (p == "/" && name == META_PATH + 1) {
@@ -116,7 +120,80 @@ static int raidfs_create(const char *path, mode_t mode,
     if (is_internal_meta(p))
         return -EACCES;
 
+    // 检查父目录是否存在
+    size_t last_slash = p.rfind('/');
+    if (last_slash != std::string::npos && last_slash > 0) {
+        std::string parent = p.substr(0, last_slash);
+        if (!g_meta->is_dir(parent)) {
+            return -ENOENT;
+        }
+    }
+
+    // 检查是否已存在同名目录
+    if (g_meta->is_dir(p)) {
+        return -EISDIR;
+    }
+
     g_meta->create_file(p);
+    return 0;
+}
+
+// ------------------------------------------------------------
+// mkdir
+// ------------------------------------------------------------
+static int raidfs_mkdir(const char *path, mode_t mode)
+{
+    (void)mode;
+
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
+    // 检查是否已存在同名文件
+    if (g_meta->exists(p)) {
+        return -EEXIST;
+    }
+
+    // 检查是否已存在同名目录
+    if (g_meta->is_dir(p)) {
+        return -EEXIST;
+    }
+
+    if (!g_meta->create_dir(p)) {
+        return -ENOENT;  // 父目录不存在
+    }
+
+    return 0;
+}
+
+// ------------------------------------------------------------
+// rmdir
+// ------------------------------------------------------------
+static int raidfs_rmdir(const char *path)
+{
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
+    if (p == "/")
+        return -EACCES;
+
+    // 检查是否是目录
+    if (!g_meta->is_dir(p)) {
+        return -ENOTDIR;
+    }
+
+    // 检查目录是否为空
+    if (!g_meta->is_empty_dir(p)) {
+        return -ENOTEMPTY;
+    }
+
+    if (!g_meta->remove_dir(p)) {
+        return -ENOENT;
+    }
+
     return 0;
 }
 
@@ -134,6 +211,36 @@ static int raidfs_unlink(const char *path)
         return -ENOENT;
 
     g_meta->remove_file(p);
+    return 0;
+}
+
+// ------------------------------------------------------------
+// rename
+// ------------------------------------------------------------
+static int raidfs_rename(const char *from, const char *to, unsigned int flags)
+{
+    (void)flags;
+
+    std::string old_path(from);
+    std::string new_path(to);
+
+    if (is_internal_meta(old_path) || is_internal_meta(new_path))
+        return -EACCES;
+
+    // 如果目标已存在，先删除
+    if (g_meta->exists(new_path)) {
+        g_meta->remove_file(new_path);
+    } else if (g_meta->is_dir(new_path)) {
+        if (!g_meta->is_empty_dir(new_path)) {
+            return -ENOTEMPTY;
+        }
+        g_meta->remove_dir(new_path);
+    }
+
+    if (!g_meta->rename(old_path, new_path)) {
+        return -ENOENT;
+    }
+
     return 0;
 }
 
@@ -222,6 +329,187 @@ static int raidfs_truncate(const char *path, off_t size,
 }
 
 // ------------------------------------------------------------
+// utimens - 设置文件时间戳（许多程序需要此功能）
+// ------------------------------------------------------------
+static int raidfs_utimens(const char *path, const struct timespec ts[2],
+                          struct fuse_file_info *fi)
+{
+    (void)fi;
+    (void)ts;
+
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
+    // 检查路径是否存在（文件或目录）
+    if (!g_meta->exists(p) && !g_meta->is_dir(p) && p != "/") {
+        return -ENOENT;
+    }
+
+    // 目前不存储时间戳，直接返回成功
+    return 0;
+}
+
+// ------------------------------------------------------------
+// statfs - 文件系统统计信息
+// ------------------------------------------------------------
+static int raidfs_statfs(const char *path, struct statvfs *stbuf)
+{
+    (void)path;
+
+    memset(stbuf, 0, sizeof(struct statvfs));
+
+    // 返回一些合理的默认值
+    stbuf->f_bsize = 4096;           // 块大小
+    stbuf->f_frsize = 4096;          // 片段大小
+    stbuf->f_blocks = 1024 * 1024;   // 总块数 (4GB)
+    stbuf->f_bfree = 512 * 1024;     // 空闲块数 (2GB)
+    stbuf->f_bavail = 512 * 1024;    // 可用块数
+    stbuf->f_files = 1000000;        // 总 inode 数
+    stbuf->f_ffree = 500000;         // 空闲 inode 数
+    stbuf->f_favail = 500000;        // 可用 inode 数
+    stbuf->f_namemax = 255;          // 最大文件名长度
+
+    return 0;
+}
+
+// ------------------------------------------------------------
+// access - 检查文件访问权限
+// ------------------------------------------------------------
+static int raidfs_access(const char *path, int mask)
+{
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -ENOENT;
+
+    // 根目录
+    if (p == "/") {
+        return 0;
+    }
+
+    // 检查文件或目录是否存在
+    if (g_meta->exists(p) || g_meta->is_dir(p)) {
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
+// ------------------------------------------------------------
+// chmod - 修改文件权限（目前不实际存储权限）
+// ------------------------------------------------------------
+static int raidfs_chmod(const char *path, mode_t mode,
+                        struct fuse_file_info *fi)
+{
+    (void)fi;
+    (void)mode;
+
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
+    // 检查路径是否存在
+    if (!g_meta->exists(p) && !g_meta->is_dir(p) && p != "/") {
+        return -ENOENT;
+    }
+
+    // 目前不存储权限，直接返回成功
+    return 0;
+}
+
+// ------------------------------------------------------------
+// chown - 修改文件所有者（目前不实际存储所有者）
+// ------------------------------------------------------------
+static int raidfs_chown(const char *path, uid_t uid, gid_t gid,
+                        struct fuse_file_info *fi)
+{
+    (void)fi;
+    (void)uid;
+    (void)gid;
+
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -EACCES;
+
+    // 检查路径是否存在
+    if (!g_meta->exists(p) && !g_meta->is_dir(p) && p != "/") {
+        return -ENOENT;
+    }
+
+    // 目前不存储所有者，直接返回成功
+    return 0;
+}
+
+// ------------------------------------------------------------
+// flush - 刷新文件（在 close 之前调用）
+// ------------------------------------------------------------
+static int raidfs_flush(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)fi;
+    return 0;
+}
+
+// ------------------------------------------------------------
+// release - 关闭文件
+// ------------------------------------------------------------
+static int raidfs_release(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)fi;
+    return 0;
+}
+
+// ------------------------------------------------------------
+// fsync - 同步文件数据
+// ------------------------------------------------------------
+static int raidfs_fsync(const char *path, int isdatasync,
+                        struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)isdatasync;
+    (void)fi;
+    return 0;
+}
+
+// ------------------------------------------------------------
+// opendir - 打开目录
+// ------------------------------------------------------------
+static int raidfs_opendir(const char *path, struct fuse_file_info *fi)
+{
+    (void)fi;
+
+    std::string p(path);
+
+    if (is_internal_meta(p))
+        return -ENOENT;
+
+    if (p == "/") {
+        return 0;
+    }
+
+    if (!g_meta->is_dir(p)) {
+        return -ENOTDIR;
+    }
+
+    return 0;
+}
+
+// ------------------------------------------------------------
+// releasedir - 关闭目录
+// ------------------------------------------------------------
+static int raidfs_releasedir(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)fi;
+    return 0;
+}
+
+// ------------------------------------------------------------
 // FUSE ops
 // ------------------------------------------------------------
 static struct fuse_operations raidfs_ops = {};
@@ -229,11 +517,24 @@ static void init_ops() {
     raidfs_ops.getattr    = raidfs_getattr;
     raidfs_ops.readdir    = raidfs_readdir;
     raidfs_ops.create     = raidfs_create;
+    raidfs_ops.mkdir      = raidfs_mkdir;
+    raidfs_ops.rmdir      = raidfs_rmdir;
     raidfs_ops.unlink     = raidfs_unlink;
+    raidfs_ops.rename     = raidfs_rename;
     raidfs_ops.truncate   = raidfs_truncate;
     raidfs_ops.open       = raidfs_open;
     raidfs_ops.read       = raidfs_read;
     raidfs_ops.write      = raidfs_write;
+    raidfs_ops.utimens    = raidfs_utimens;
+    raidfs_ops.statfs     = raidfs_statfs;
+    raidfs_ops.access     = raidfs_access;
+    raidfs_ops.chmod      = raidfs_chmod;
+    raidfs_ops.chown      = raidfs_chown;
+    raidfs_ops.flush      = raidfs_flush;
+    raidfs_ops.release    = raidfs_release;
+    raidfs_ops.fsync      = raidfs_fsync;
+    raidfs_ops.opendir    = raidfs_opendir;
+    raidfs_ops.releasedir = raidfs_releasedir;
 }
 
 // ------------------------------------------------------------

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cstdint>
 #include "path_trie.h"
@@ -39,8 +40,18 @@ public:
     void add_stripe(const std::string& path, uint64_t stripe_id);
     const std::vector<uint64_t>& get_stripes(const std::string& path);
 
+    // 目录操作
+    bool create_dir(const std::string& path);
+    bool remove_dir(const std::string& path);
+    bool is_dir(const std::string& path);
+    bool is_empty_dir(const std::string& path);
+
+    // 重命名操作
+    bool rename(const std::string& old_path, const std::string& new_path);
+
 private:
     std::unordered_map<std::string, FileMeta> files;
+    std::unordered_set<std::string> directories;  // 显式创建的目录
     PathTrie trie;
 
     static constexpr const char* META_PATH = "/.__cloudraidfs_meta";
