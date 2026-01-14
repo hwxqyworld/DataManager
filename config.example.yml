@@ -1,0 +1,44 @@
+# CloudRaidFS 配置文件示例
+
+# 挂载点
+mountpoint: /mnt/cloudraidfs
+
+# 纠删码参数
+k: 2  # 数据块数量
+m: 1  # 校验块数量
+
+# 文件缓存配置（可选）
+# 用于缓存完整的小文件，适合频繁读取的小文件
+cache:
+  # 最大缓存大小（MB），默认 256MB
+  max_cache_size: 256
+  # 最大可缓存文件大小（MB），默认 32MB
+  # 超过此大小的文件不会被缓存
+  max_file_size: 32
+  # 缓存过期时间（秒），默认 60 秒
+  # 每次访问会将过期时间往后顺延
+  cache_ttl: 60
+
+# Chunk 缓存配置（可选）
+# 用于缓存 stripe/chunk 数据，当文件缓存未命中时使用
+# 适合大文件的部分读取场景
+chunk_cache:
+  # 最大缓存大小（MB），默认 256MB
+  max_cache_size: 256
+  # 缓存过期时间（秒），默认 60 秒
+  # 每次访问会将过期时间往后顺延
+  cache_ttl: 60
+
+# 后端存储配置
+backends:
+  backend0:
+    type: local
+    path: /data/chunk0
+  backend1:
+    type: local
+    path: /data/chunk1
+  backend2:
+    type: webdav
+    url: https://webdav.example.com/cloudraidfs
+    username: user
+    password: pass

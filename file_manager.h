@@ -3,6 +3,8 @@
 
 #include "raid_chunk_store.h"
 #include "metadata_manager.h"
+#include "file_cache.h"
+#include "chunk_cache.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -12,7 +14,9 @@ public:
     static const uint64_t STRIPE_SIZE = 4ULL * 1024 * 1024; // 4 MiB
 
     FileManager(std::shared_ptr<RAIDChunkStore> raid_store,
-                std::shared_ptr<MetadataManager> meta_mgr);
+                std::shared_ptr<MetadataManager> meta_mgr,
+                std::shared_ptr<FileCache> file_cache = nullptr,
+                std::shared_ptr<ChunkCache> chunk_cache = nullptr);
 
     // 读取 [offset, offset+size)
     bool read(const std::string &path,
@@ -35,15 +39,20 @@ public:
 private:
     std::shared_ptr<RAIDChunkStore> raid;
     std::shared_ptr<MetadataManager> meta;
+    std::shared_ptr<FileCache> file_cache_;
+    std::shared_ptr<ChunkCache> chunk_cache_;
 
     // 根据 offset 找到 stripe_id（不存在则自动扩展）
     uint64_t ensure_stripe(const std::string &path, uint64_t stripe_index);
 
-    // 读取单个 stripe
+    // 读取单个 stripe（带 chunk 缓存）
     bool read_stripe(uint64_t stripe_id, std::string &out);
 
-    // 写入单个 stripe
+    // 写入单个 stripe（同时更新 chunk 缓存）
     bool write_stripe(uint64_t stripe_id, const std::string &data);
+
+    // 从后端读取完整文件（用于文件缓存）
+    bool read_full_file(const std::string &path, std::string &out);
 };
 
 #endif // FILE_MANAGER_H

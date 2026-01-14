@@ -7,6 +7,8 @@
 #include "rs_coder.h"
 #include "file_manager.h"
 #include "metadata_manager.h"
+#include "file_cache.h"
+#include "chunk_cache.h"
 #include "yml_parser.h"
 
 #include <memory>
@@ -299,10 +301,73 @@ int main(int argc, char *argv[])
     auto raid  = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
 
     // ------------------------------------------------------------
+    // 初始化缓存
+    // ------------------------------------------------------------
+    CacheConfig cache_config;
+    
+    // 从配置文件读取缓存参数（可选）
+    if (root.map.count("cache")) {
+        const auto &cache_node = root.map.at("cache");
+        
+        // max_cache_size: 最大缓存大小（MB），默认 256MB
+        if (cache_node.map.count("max_cache_size")) {
+            cache_config.max_cache_size = 
+                std::stoull(cache_node.map.at("max_cache_size").value) * 1024 * 1024;
+        }
+        
+        // max_file_size: 最大可缓存文件大小（MB），默认 32MB
+        if (cache_node.map.count("max_file_size")) {
+            cache_config.max_file_size = 
+                std::stoull(cache_node.map.at("max_file_size").value) * 1024 * 1024;
+        }
+        
+        // cache_ttl: 缓存过期时间（秒），默认 60 秒
+        if (cache_node.map.count("cache_ttl")) {
+            cache_config.cache_ttl_seconds = 
+                std::stoull(cache_node.map.at("cache_ttl").value);
+        }
+    }
+    
+    std::fprintf(stderr, "文件缓存配置: max_cache_size=%lluMB, max_file_size=%lluMB, cache_ttl=%llus\n",
+                 (unsigned long long)(cache_config.max_cache_size / 1024 / 1024),
+                 (unsigned long long)(cache_config.max_file_size / 1024 / 1024),
+                 (unsigned long long)cache_config.cache_ttl_seconds);
+    
+    auto file_cache = std::make_shared<FileCache>(cache_config);
+
+    // ------------------------------------------------------------
+    // 初始化 Chunk 缓存
+    // ------------------------------------------------------------
+    ChunkCacheConfig chunk_cache_config;
+    
+    // 从配置文件读取 chunk 缓存参数（可选）
+    if (root.map.count("chunk_cache")) {
+        const auto &chunk_cache_node = root.map.at("chunk_cache");
+        
+        // max_cache_size: 最大缓存大小（MB），默认 256MB
+        if (chunk_cache_node.map.count("max_cache_size")) {
+            chunk_cache_config.max_cache_size = 
+                std::stoull(chunk_cache_node.map.at("max_cache_size").value) * 1024 * 1024;
+        }
+        
+        // cache_ttl: 缓存过期时间（秒），默认 60 秒
+        if (chunk_cache_node.map.count("cache_ttl")) {
+            chunk_cache_config.cache_ttl_seconds = 
+                std::stoull(chunk_cache_node.map.at("cache_ttl").value);
+        }
+    }
+    
+    std::fprintf(stderr, "Chunk缓存配置: max_cache_size=%lluMB, cache_ttl=%llus\n",
+                 (unsigned long long)(chunk_cache_config.max_cache_size / 1024 / 1024),
+                 (unsigned long long)chunk_cache_config.cache_ttl_seconds);
+    
+    auto chunk_cache = std::make_shared<ChunkCache>(chunk_cache_config);
+
+    // ------------------------------------------------------------
     // 初始化元数据与文件管理器
     // ------------------------------------------------------------
     g_meta = std::make_shared<MetadataManager>();
-    g_fm   = std::make_shared<FileManager>(raid, g_meta);
+    g_fm   = std::make_shared<FileManager>(raid, g_meta, file_cache, chunk_cache);
 
     // 元数据存储在 CloudRaidFS 内部文件中
     if (!g_meta->load_from_backend(g_fm.get())) {
