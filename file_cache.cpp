@@ -1,6 +1,8 @@
 #include "file_cache.h"
 #include <algorithm>
 #include <iostream>
+#include <chrono>
+#include <vector>
 
 FileCache::FileCache(const CacheConfig& config)
     : config_(config)
