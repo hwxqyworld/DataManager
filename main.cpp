@@ -3,6 +3,7 @@
 
 #include "local_chunk_store.h"
 #include "webdav_chunk_store.h"
+#include "s3_chunk_store.h"
 #include "raid_chunk_store.h"
 #include "rs_coder.h"
 #include "file_manager.h"
@@ -588,6 +589,18 @@ int main(int argc, char *argv[])
             std::string pass = node.map.count("password")
                                ? node.map.at("password").value : "";
             backends.push_back(std::make_shared<WebDavChunkStore>(url, user, pass));
+        }
+        else if (type == "s3") {
+            std::string endpoint   = node.map.at("endpoint").value;
+            std::string access_key = node.map.at("access_key").value;
+            std::string secret_key = node.map.at("secret_key").value;
+            std::string bucket     = node.map.at("bucket").value;
+            bool use_ssl = node.map.count("use_ssl")
+                           ? (node.map.at("use_ssl").value == "true") : true;
+            std::string region = node.map.count("region")
+                                 ? node.map.at("region").value : "";
+            backends.push_back(std::make_shared<S3ChunkStore>(
+                endpoint, access_key, secret_key, bucket, use_ssl, region));
         }
         else {
             std::fprintf(stderr, "未知后端类型: %s\n", type.c_str());

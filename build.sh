@@ -118,6 +118,8 @@ $CXX $CXXFLAGS \
     $FUSE_LIBS \
     -lcurl \
     -lpthread \
+    -laws-cpp-sdk-s3 \
+    -laws-cpp-sdk-core \
     -std=c++14
 
 echo -e "${GREEN}✓ 构建成功${NC}"
