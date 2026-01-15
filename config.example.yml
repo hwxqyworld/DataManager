@@ -42,3 +42,12 @@ backends:
     url: https://webdav.example.com/cloudraidfs
     username: user
     password: pass
+  # S3/MinIO 后端示例
+  # backend3:
+  #   type: s3
+  #   endpoint: play.min.io
+  #   access_key: YOUR_ACCESS_KEY
+  #   secret_key: YOUR_SECRET_KEY
+  #   bucket: cloudraidfs
+  #   use_ssl: true
+  #   region: us-east-1
