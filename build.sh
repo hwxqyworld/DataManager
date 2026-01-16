@@ -118,7 +118,7 @@ $CXX $CXXFLAGS \
     $FUSE_LIBS \
     -lpthread \
     -lcurl \
-    -lz \
+    -lz -lssl -lcrypto -lpsl -lidn2 -lrtmp -lssh2 -lcares -lnghttp2 -lzstd \
     -laws-cpp-sdk-s3 \
     -laws-cpp-sdk-core \
     -std=c++14
