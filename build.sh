@@ -116,6 +116,7 @@ $CXX $CXXFLAGS \
     $SRC \
     -o "$OUT" \
     $FUSE_LIBS \
+    -lz \
     -lcurl \
     -lpthread \
     -laws-cpp-sdk-s3 \
