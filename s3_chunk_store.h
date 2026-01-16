@@ -6,14 +6,18 @@
 #include <mutex>
 #include <memory>
 
-// 前向声明 AWS SDK 类型
-namespace Aws {
-    namespace S3 {
-        class S3Client;
-    }
+// 前向声明 minio-cpp 类型
+namespace minio {
+namespace s3 {
+    class Client;
+    class BaseUrl;
+}
+namespace creds {
+    class StaticProvider;
+}
 }
 
-// S3 实现的 ChunkStore（使用 AWS SDK）
+// S3 实现的 ChunkStore（使用 minio-cpp SDK）
 // 每个 chunk 对应一个对象：
 //   <bucket>/stripes/<stripe_id>/<chunk_id>.chunk
 
@@ -47,8 +51,8 @@ private:
     std::string region_;
     bool use_ssl_;
 
-    // AWS S3 客户端
-    std::shared_ptr<Aws::S3::S3Client> client_;
+    // minio-cpp 客户端
+    std::unique_ptr<minio::s3::Client> client_;
     std::mutex client_mu_;
 
     // 确保 bucket 存在

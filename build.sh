@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh - Production-grade build script for CloudRaidFs (FUSE RAID FS)
+# build.sh - CloudRaidFs build script (FUSE + vcpkg + minio-cpp)
 
 set -e
 
@@ -28,7 +28,6 @@ echo -e "${YELLOW}Version: ${VERSION}${NC}"
 # 参数解析
 # -----------------------------
 MODE="${1:-release}"
-
 echo -e "${YELLOW}Build mode: ${MODE}${NC}"
 
 # -----------------------------
@@ -56,7 +55,29 @@ else
 fi
 
 # -----------------------------
-# 源文件列表（自动扫描）
+# vcpkg 自动检测
+# -----------------------------
+VCPKG_ROOT="$HOME/vcpkg/installed/x64-linux"
+VCPKG_STATIC="$HOME/vcpkg/installed/x64-linux-static"
+
+if [ -d "$VCPKG_ROOT" ]; then
+    echo -e "${GREEN}检测到 vcpkg 动态库: $VCPKG_ROOT${NC}"
+    VCPKG_INC="-I$VCPKG_ROOT/include"
+    VCPKG_LIB="-L$VCPKG_ROOT/lib"
+elif [ -d "$VCPKG_STATIC" ]; then
+    echo -e "${GREEN}检测到 vcpkg 静态库: $VCPKG_STATIC${NC}"
+    VCPKG_INC="-I$VCPKG_STATIC/include"
+    VCPKG_LIB="-L$VCPKG_STATIC/lib"
+else
+    echo -e "${RED}未检测到 vcpkg，请先执行:${NC}"
+    echo "  git clone https://github.com/microsoft/vcpkg ~/vcpkg"
+    echo "  ~/vcpkg/bootstrap-vcpkg.sh"
+    echo "  ~/vcpkg/vcpkg install minio-cpp"
+    exit 1
+fi
+
+# -----------------------------
+# 源文件列表
 # -----------------------------
 SRC=$(ls *.cpp)
 
@@ -90,6 +111,9 @@ case "$MODE" in
         fi
         CXX="musl-g++"
         CXXFLAGS="-O3 -static -DNDEBUG"
+        VCPKG_ROOT="$VCPKG_STATIC"
+        VCPKG_INC="-I$VCPKG_STATIC/include"
+        VCPKG_LIB="-L$VCPKG_STATIC/lib"
         ;;
 
     clean)
@@ -112,18 +136,22 @@ echo -e "${GREEN}开始构建...${NC}"
 
 $CXX $CXXFLAGS \
     $FUSE_CFLAGS \
+    $VCPKG_INC \
     -D_DM_VERSION="\"${VERSION}\"" \
     $SRC \
     -o "$OUT" \
     $FUSE_LIBS \
+    $VCPKG_LIB \
+    -lminio-cpp \
     -lcurl \
+    -lssl \
+    -lcrypto \
+    -lz \
     -lpthread \
-    -laws-cpp-sdk-s3 \
-    -laws-cpp-sdk-core \
-    -std=c++14
+    -std=c++20
 
 echo -e "${GREEN}✓ 构建成功${NC}"
 echo "输出文件: ./${OUT}"
 echo ""
 echo -e "${YELLOW}运行示例:${NC}"
-echo "  sudo ./${OUT} /data/raid0 /mnt/raidfs"
+echo "  sudo ./${OUT} config.yml"
