@@ -2,69 +2,64 @@
 #define WEBDAV_CHUNK_STORE_H
 
 #include "chunk_store.h"
-#include <curl/curl.h>
+#include <neon/ne_session.h>
+#include <neon/ne_request.h>
+#include <neon/ne_basic.h>
+#include <neon/ne_auth.h>
+#include <neon/ne_uri.h>
 #include <string>
 #include <mutex>
 #include <queue>
 #include <unordered_set>
 #include <memory>
 
-// CURL 句柄池，避免频繁创建/销毁连接
-class CurlPool {
+// Neon 会话池，避免频繁创建/销毁连接
+class NeonPool {
 public:
-    explicit CurlPool(size_t max_size = 16) : max_size_(max_size) {}
+    explicit NeonPool(const std::string& scheme,
+                      const std::string& host,
+                      int port,
+                      const std::string& username,
+                      const std::string& password,
+                      size_t max_size = 16);
     
-    ~CurlPool() {
-        std::lock_guard<std::mutex> lock(mu_);
-        while (!pool_.empty()) {
-            curl_easy_cleanup(pool_.front());
-            pool_.pop();
-        }
-    }
+    ~NeonPool();
     
-    CURL* acquire() {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (!pool_.empty()) {
-            CURL* curl = pool_.front();
-            pool_.pop();
-            curl_easy_reset(curl);
-            return curl;
-        }
-        return curl_easy_init();
-    }
-    
-    void release(CURL* curl) {
-        if (!curl) return;
-        std::lock_guard<std::mutex> lock(mu_);
-        if (pool_.size() < max_size_) {
-            pool_.push(curl);
-        } else {
-            curl_easy_cleanup(curl);
-        }
-    }
+    ne_session* acquire();
+    void release(ne_session* sess);
 
 private:
-    std::queue<CURL*> pool_;
+    std::string scheme_;
+    std::string host_;
+    int port_;
+    std::string username_;
+    std::string password_;
+    
+    std::queue<ne_session*> pool_;
     std::mutex mu_;
     size_t max_size_;
+    
+    ne_session* create_session();
+    static int auth_callback(void* userdata, const char* realm, int attempt,
+                             char* username, char* password);
 };
 
-// RAII 包装器，自动归还 CURL 句柄
-class CurlHandle {
+// RAII 包装器，自动归还 Neon 会话
+class NeonHandle {
 public:
-    CurlHandle(CurlPool& pool) : pool_(pool), curl_(pool.acquire()) {}
-    ~CurlHandle() { pool_.release(curl_); }
+    NeonHandle(NeonPool& pool) : pool_(pool), sess_(pool.acquire()) {}
+    ~NeonHandle() { pool_.release(sess_); }
     
-    CURL* get() { return curl_; }
-    operator CURL*() { return curl_; }
+    ne_session* get() { return sess_; }
+    operator ne_session*() { return sess_; }
     
     // 禁止拷贝
-    CurlHandle(const CurlHandle&) = delete;
-    CurlHandle& operator=(const CurlHandle&) = delete;
+    NeonHandle(const NeonHandle&) = delete;
+    NeonHandle& operator=(const NeonHandle&) = delete;
 
 private:
-    CurlPool& pool_;
-    CURL* curl_;
+    NeonPool& pool_;
+    ne_session* sess_;
 };
 
 class WebDavChunkStore : public ChunkStore {
@@ -87,29 +82,27 @@ public:
                       uint32_t chunk_id) override;
 
 private:
-    std::string base_url;
-    std::string username;
-    std::string password;
+    std::string base_url_;
+    std::string base_path_;
+    std::string username_;
+    std::string password_;
     
-    // 连接池（替代单个互斥锁）
-    mutable CurlPool curl_pool_;
+    // 连接池
+    std::unique_ptr<NeonPool> neon_pool_;
     
     // 已创建目录缓存（避免重复 MKCOL）
     std::unordered_set<uint64_t> created_stripe_dirs_;
     std::mutex dir_cache_mu_;
     bool stripes_dir_created_ = false;
 
-    std::string make_url(uint64_t stripe_id, uint32_t chunk_index) const;
-    std::string make_dir_url(const std::string& rel_path) const;
+    std::string make_path(uint64_t stripe_id, uint32_t chunk_index) const;
+    std::string make_dir_path(const std::string& rel_path) const;
     
     // WebDAV MKCOL 创建目录
-    bool mkcol(CURL* curl, const std::string& url);
+    bool mkcol(ne_session* sess, const std::string& path);
     
     // 确保 stripe 目录存在（带缓存）
     void ensure_stripe_dir(uint64_t stripe_id);
-    
-    // 设置 CURL 通用选项（认证等）
-    void setup_curl_auth(CURL* curl);
 };
 
 #endif
