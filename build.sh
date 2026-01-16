@@ -57,17 +57,12 @@ fi
 # -----------------------------
 # vcpkg 自动检测
 # -----------------------------
-VCPKG_ROOT="$HOME/vcpkg/installed/x64-linux"
-VCPKG_STATIC="$HOME/vcpkg/installed/x64-linux-static"
+VCPKG_ROOT="$HOME/minio-cpp/build/Debug/vcpkg_installed/x64-linux"
 
 if [ -d "$VCPKG_ROOT" ]; then
     echo -e "${GREEN}检测到 vcpkg 动态库: $VCPKG_ROOT${NC}"
     VCPKG_INC="-I$VCPKG_ROOT/include"
     VCPKG_LIB="-L$VCPKG_ROOT/lib"
-elif [ -d "$VCPKG_STATIC" ]; then
-    echo -e "${GREEN}检测到 vcpkg 静态库: $VCPKG_STATIC${NC}"
-    VCPKG_INC="-I$VCPKG_STATIC/include"
-    VCPKG_LIB="-L$VCPKG_STATIC/lib"
 else
     echo -e "${RED}未检测到 vcpkg，请先执行:${NC}"
     echo "  git clone https://github.com/microsoft/vcpkg ~/vcpkg"
