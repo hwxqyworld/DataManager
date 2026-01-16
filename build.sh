@@ -116,9 +116,9 @@ $CXX $CXXFLAGS \
     $SRC \
     -o "$OUT" \
     $FUSE_LIBS \
-    -lz \
     -lpthread \
     -lcurl \
+    -lz \
     -laws-cpp-sdk-s3 \
     -laws-cpp-sdk-core \
     -std=c++14
