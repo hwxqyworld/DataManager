@@ -117,10 +117,8 @@ $CXX $CXXFLAGS \
     -o "$OUT" \
     $FUSE_LIBS \
     -lpthread \
-    -lcurl \
     -laws-cpp-sdk-s3 \
     -laws-cpp-sdk-core \
-    -lz -lssl -lcrypto -lcares -lzstd \
     -std=c++14
 
 echo -e "${GREEN}✓ 构建成功${NC}"
