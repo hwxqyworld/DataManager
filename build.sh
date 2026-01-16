@@ -143,7 +143,7 @@ $CXX $CXXFLAGS \
     $FUSE_LIBS \
     $VCPKG_LIB \
     -lminio-cpp \
-    -lcurl \
+    -lneon \
     -lssl \
     -lcrypto \
     -lz \
