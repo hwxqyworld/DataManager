@@ -117,8 +117,8 @@ $CXX $CXXFLAGS \
     -o "$OUT" \
     $FUSE_LIBS \
     -lz \
-    -lcurl \
     -lpthread \
+    -lcurl \
     -laws-cpp-sdk-s3 \
     -laws-cpp-sdk-core \
     -std=c++14
