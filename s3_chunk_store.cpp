@@ -109,41 +109,69 @@ bool S3ChunkStore::read_chunk(uint64_t stripe_id,
     
     std::string object_key = make_object_key(stripe_id, chunk_id);
     
-    for (int attempt = 0; attempt < S3_MAX_RETRIES; ++attempt) {
+    out.clear();
+    
+    minio::s3::GetObjectArgs args;
+    args.bucket = bucket_;
+    args.object = object_key;
+    
+    // 使用回调函数收集数据
+    std::ostringstream data_stream;
+    args.datafunc = [&data_stream](minio::http::DataFunctionArgs args) -> bool {
+        data_stream.write(args.datachunk.data(), args.datachunk.size());
+        return true;
+    };
+    
+    std::lock_guard<std::mutex> lock(client_mu_);
+    minio::s3::GetObjectResponse resp = client_->GetObject(args);
+    
+    if (resp) {
+        out = data_stream.str();
+        return true;
+    }
+    
+    // 检查是否是 404 Not Found（对象不存在是正常情况，不需要重试或打印错误）
+    // minio-cpp 返回的错误信息可能包含 "404"、"NoSuchKey"、"ResourceNotFound" 等
+    std::string error_code = resp.code;
+    std::string error_msg = resp.Error().String();
+    if (error_code == "NoSuchKey" || error_code == "ResourceNotFound" ||
+        error_msg.find("404") != std::string::npos ||
+        error_msg.find("NoSuchKey") != std::string::npos ||
+        error_msg.find("Not Found") != std::string::npos) {
+        // 对象不存在，静默返回 false（首次启动时这是正常情况）
         out.clear();
+        return false;
+    }
+    
+    // 其他错误才需要重试
+    for (int attempt = 1; attempt < S3_MAX_RETRIES; ++attempt) {
+        std::fprintf(stderr, "S3ChunkStore::read_chunk: %s attempt %d failed: %s\n",
+                     object_key.c_str(), attempt, error_msg.c_str());
         
-        minio::s3::GetObjectArgs args;
-        args.bucket = bucket_;
-        args.object = object_key;
+        out.clear();
+        data_stream.str("");
+        data_stream.clear();
         
-        // 使用回调函数收集数据
-        std::ostringstream data_stream;
-        args.datafunc = [&data_stream](minio::http::DataFunctionArgs args) -> bool {
-            data_stream.write(args.datachunk.data(), args.datachunk.size());
-            return true;
-        };
+        minio::s3::GetObjectResponse retry_resp = client_->GetObject(args);
         
-        std::lock_guard<std::mutex> lock(client_mu_);
-        minio::s3::GetObjectResponse resp = client_->GetObject(args);
-        
-        if (resp) {
+        if (retry_resp) {
             out = data_stream.str();
             return true;
         }
         
-        // 检查是否是 404 Not Found
-        std::string error_code = resp.code;
-        if (error_code == "NoSuchKey" || error_code == "ResourceNotFound") {
+        error_code = retry_resp.code;
+        error_msg = retry_resp.Error().String();
+        if (error_code == "NoSuchKey" || error_code == "ResourceNotFound" ||
+            error_msg.find("404") != std::string::npos ||
+            error_msg.find("NoSuchKey") != std::string::npos ||
+            error_msg.find("Not Found") != std::string::npos) {
             out.clear();
             return false;
         }
-        
-        std::fprintf(stderr, "S3ChunkStore::read_chunk: %s attempt %d failed: %s\n",
-                     object_key.c_str(), attempt + 1, resp.Error().String().c_str());
     }
     
-    std::fprintf(stderr, "S3ChunkStore::read_chunk: %s failed after %d retries\n",
-                 object_key.c_str(), S3_MAX_RETRIES);
+    std::fprintf(stderr, "S3ChunkStore::read_chunk: %s failed after %d retries: %s\n",
+                 object_key.c_str(), S3_MAX_RETRIES, error_msg.c_str());
     return false;
 }
 
