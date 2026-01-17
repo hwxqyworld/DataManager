@@ -138,7 +138,7 @@ $CXX $CXXFLAGS \
     $FUSE_LIBS \
     $VCPKG_LIB \
     -lminiocpp \
-    -lpugixml -lINIReader -lcurl -lcurlpp -linih \
+    -lpugixml -lINIReader -lcurlpp -lcurl -linih \
     -lneon \
     -lssl \
     -lcrypto \
