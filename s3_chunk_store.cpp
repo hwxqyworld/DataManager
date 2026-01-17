@@ -58,20 +58,20 @@ void S3ChunkStore::ensure_bucket() {
     minio::s3::BucketExistsArgs exists_args;
     exists_args.bucket = bucket_;
 
-    minio::s3::BucketExistsResponse exists_resp;
+    minio::s3::BucketExistsResponse * exists_resp = nullptr;
     {
         std::lock_guard<std::mutex> client_lock(client_mu_);
-        exists_resp = client_->BucketExists(exists_args);
+        exists_resp = new minio::s3::BucketExistsResponse(client_->BucketExists(exists_args));
     }
 
-    if (!exists_resp) {
+    if (!(*exists_resp)) {
         std::fprintf(stderr,
                      "S3ChunkStore::ensure_bucket: BucketExists check failed: %s\n",
-                     exists_resp.Error().String().c_str());
+                     exists_resp->Error().String().c_str());
         return;  // 下次重试
     }
 
-    if (!exists_resp.exist) {
+    if (!exists_resp->exist) {
         std::fprintf(stderr,
                      "S3ChunkStore::ensure_bucket: bucket %s does not exist, creating...\n",
                      bucket_.c_str());
@@ -82,16 +82,16 @@ void S3ChunkStore::ensure_bucket() {
             make_args.region = region_;
         }
 
-        minio::s3::MakeBucketResponse make_resp;
+        minio::s3::MakeBucketResponse * make_resp;
         {
             std::lock_guard<std::mutex> client_lock(client_mu_);
-            make_resp = client_->MakeBucket(make_args);
+            make_resp = new minio::s3::MakeBucketResponse(client_->MakeBucket(make_args));
         }
 
-        if (!make_resp) {
+        if (!(*make_resp)) {
             std::fprintf(stderr,
                          "S3ChunkStore::ensure_bucket: CreateBucket failed: %s\n",
-                         make_resp.Error().String().c_str());
+                         make_resp->Error().String().c_str());
             return;  // 下次重试
         }
 
