@@ -57,7 +57,7 @@ fi
 # -----------------------------
 # vcpkg 自动检测
 # -----------------------------
-VCPKG_ROOT="$HOME/minio-cpp/build/Debug/vcpkg_installed/x64-linux"
+VCPKG_ROOT="$HOME/vcpkg/installed/x64-linux"
 
 if [ -d "$VCPKG_ROOT" ]; then
     echo -e "${GREEN}检测到 vcpkg 动态库: $VCPKG_ROOT${NC}"
@@ -137,7 +137,7 @@ $CXX $CXXFLAGS \
     -o "$OUT" \
     $FUSE_LIBS \
     $VCPKG_LIB \
-    -lminio-cpp \
+    -lminiocpp \
     -lneon \
     -lssl \
     -lcrypto \
