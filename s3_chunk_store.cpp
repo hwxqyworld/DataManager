@@ -132,7 +132,7 @@ bool S3ChunkStore::read_chunk(uint64_t stripe_id,
         }
         
         // 检查是否是 404 Not Found
-        std::string error_code = resp.Error().Code();
+        std::string error_code = resp.code;
         if (error_code == "NoSuchKey" || error_code == "ResourceNotFound") {
             out.clear();
             return false;
@@ -201,7 +201,7 @@ bool S3ChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
         }
         
         // S3 删除不存在的对象通常不报错，但检查一下
-        std::string error_code = resp.Error().Code();
+        std::string error_code = resp.code;
         if (error_code == "NoSuchKey" || error_code == "ResourceNotFound") {
             return true;  // 对象本来就不存在，视为成功
         }

@@ -177,24 +177,29 @@ std::string WebDavChunkStore::make_dir_path(const std::string& rel_path) const
 // WebDAV MKCOL 创建目录
 bool WebDavChunkStore::mkcol(ne_session* sess, const std::string& path)
 {
-    int ret = ne_mkcol(sess, path.c_str());
-    
+    // 使用 ne_request_create 发送 MKCOL 请求
+    ne_request* req = ne_request_create(sess, "MKCOL", path.c_str());
+    int ret = ne_request_dispatch(req);
+
     // NE_OK 成功，或者目录已存在（405 Method Not Allowed）
     if (ret == NE_OK) {
+        ne_request_destroy(req);
         return true;
     }
-    
+
     // 检查 HTTP 状态码
-    const ne_status* status = ne_get_status(sess);
+    const ne_status* status = ne_get_status(req);
     if (status && (status->code == 405 || status->code == 409 || status->code == 301)) {
         // 405: 目录已存在
         // 409: 父目录问题但可能已存在
         // 301: 重定向（通常表示目录已存在）
+        ne_request_destroy(req);
         return true;
     }
-    
+
     std::fprintf(stderr, "WebDavChunkStore::mkcol: %s failed, error: %s\n",
                  path.c_str(), ne_get_error(sess));
+    ne_request_destroy(req);
     return false;
 }
 
@@ -357,22 +362,27 @@ bool WebDavChunkStore::write_chunk(uint64_t stripe_id,
 bool WebDavChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
 {
     std::string path = make_path(stripe_id, chunk_id);
-    
+
     for (int attempt = 0; attempt < WEBDAV_MAX_RETRIES; ++attempt) {
         NeonHandle sess(*neon_pool_);
-        
-        int ret = ne_delete(sess, path.c_str());
-        const ne_status* status = ne_get_status(sess);
+
+        // 创建 DELETE 请求
+        ne_request* req = ne_request_create(sess, "DELETE", path.c_str());
+
+        int ret = ne_request_dispatch(req);
+        const ne_status* status = ne_get_status(req);
         int http_code = status ? status->code : 0;
-        
+
+        ne_request_destroy(req);
+
         // 200 OK, 204 No Content, 404 Not Found (已不存在)
         if (ret == NE_OK || http_code == 200 || http_code == 204 || http_code == 404) {
             return true;
         }
-        
+
         std::fprintf(stderr, "WebDavChunkStore::delete_chunk: %s attempt %d failed, HTTP %d, error: %s\n",
                      path.c_str(), attempt + 1, http_code, ne_get_error(sess));
     }
-    
+
     return false;
 }
