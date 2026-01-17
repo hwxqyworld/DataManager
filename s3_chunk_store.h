@@ -51,6 +51,9 @@ private:
     std::string region_;
     bool use_ssl_;
 
+    // minio-cpp 凭证提供者（必须在 client_ 之前声明，确保生命周期）
+    std::unique_ptr<minio::creds::StaticProvider> creds_provider_;
+
     // minio-cpp 客户端
     std::unique_ptr<minio::s3::Client> client_;
     std::mutex client_mu_;

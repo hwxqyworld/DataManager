@@ -33,11 +33,11 @@ S3ChunkStore::S3ChunkStore(const std::string& endpoint,
     minio::s3::BaseUrl base_url(full_endpoint);
     base_url.https = use_ssl_;
     
-    // 创建凭证提供者
-    minio::creds::StaticProvider provider(access_key_, secret_key_);
+    // 创建凭证提供者（保存为成员变量，确保生命周期）
+    creds_provider_ = std::make_unique<minio::creds::StaticProvider>(access_key_, secret_key_);
     
-    // 创建客户端
-    client_ = std::make_unique<minio::s3::Client>(base_url, &provider);
+    // 创建客户端（使用成员变量的指针）
+    client_ = std::make_unique<minio::s3::Client>(base_url, creds_provider_.get());
     
     std::fprintf(stderr, "S3ChunkStore: initialized with endpoint=%s, bucket=%s, ssl=%s\n",
                  endpoint_.c_str(), bucket_.c_str(), use_ssl_ ? "true" : "false");
