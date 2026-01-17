@@ -55,11 +55,15 @@ void S3ChunkStore::ensure_bucket()
         return;
     }
     
-    // 检查 bucket 是否存在
+    // 检查 bucket 是否存在（需要持有 client_mu_ 锁）
     minio::s3::BucketExistsArgs exists_args;
     exists_args.bucket = bucket_;
     
-    minio::s3::BucketExistsResponse exists_resp = client_->BucketExists(exists_args);
+    minio::s3::BucketExistsResponse exists_resp;
+    {
+        std::lock_guard<std::mutex> client_lock(client_mu_);
+        exists_resp = client_->BucketExists(exists_args);
+    }
     
     if (exists_resp) {
         if (!exists_resp.exist) {
@@ -73,10 +77,17 @@ void S3ChunkStore::ensure_bucket()
                 make_args.region = region_;
             }
             
-            minio::s3::MakeBucketResponse make_resp = client_->MakeBucket(make_args);
+            minio::s3::MakeBucketResponse make_resp;
+            {
+                std::lock_guard<std::mutex> client_lock(client_mu_);
+                make_resp = client_->MakeBucket(make_args);
+            }
+            
             if (!make_resp) {
                 std::fprintf(stderr, "S3ChunkStore::ensure_bucket: CreateBucket failed: %s\n",
                              make_resp.Error().String().c_str());
+                // 创建失败时不设置 bucket_exists_checked_，下次会重试
+                return;
             } else {
                 std::fprintf(stderr, "S3ChunkStore::ensure_bucket: created bucket %s\n",
                              bucket_.c_str());
@@ -85,6 +96,8 @@ void S3ChunkStore::ensure_bucket()
     } else {
         std::fprintf(stderr, "S3ChunkStore::ensure_bucket: BucketExists check failed: %s\n",
                      exists_resp.Error().String().c_str());
+        // 检查失败时不设置 bucket_exists_checked_，下次会重试
+        return;
     }
     
     bucket_exists_checked_ = true;
@@ -94,8 +107,8 @@ void S3ChunkStore::ensure_bucket()
 std::string S3ChunkStore::make_object_key(uint64_t stripe_id, uint32_t chunk_id) const
 {
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "stripes/%08lu/%02u.chunk",
-                  (unsigned long)stripe_id,
+    std::snprintf(buf, sizeof(buf), "stripes/%08llu/%02u.chunk",
+                  (unsigned long long)stripe_id,
                   (unsigned int)chunk_id);
     return std::string(buf);
 }

@@ -3,7 +3,7 @@
 
 #include <string>
 #include <vector>
-#include <unordered_map>
+#include <map>
 
 // 一个非常简单的 YAML 解析器
 // 支持：
@@ -19,7 +19,7 @@
 class YmlNode {
 public:
     std::string value;                       // key: value
-    std::unordered_map<std::string, YmlNode> map; // key: { ... }
+    std::map<std::string, YmlNode> map; // key: { ... }
     std::vector<std::string> list;           // key: [item1, item2]
 
     bool is_value() const { return !value.empty(); }
