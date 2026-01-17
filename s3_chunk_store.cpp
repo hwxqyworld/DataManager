@@ -3,29 +3,11 @@
 #include <cstdio>
 #include <sstream>
 
-#include <aws/core/Aws.h>
-#include <aws/core/auth/AWSCredentials.h>
-#include <aws/s3/S3Client.h>
-#include <aws/s3/model/HeadBucketRequest.h>
-#include <aws/s3/model/CreateBucketRequest.h>
-#include <aws/s3/model/GetObjectRequest.h>
-#include <aws/s3/model/PutObjectRequest.h>
-#include <aws/s3/model/DeleteObjectRequest.h>
+// minio-cpp headers
+#include <miniocpp/client.h>
 
 // 重试次数
 static const int S3_MAX_RETRIES = 3;
-
-// AWS SDK 初始化管理（全局只初始化一次）
-static struct AwsSdkInitializer {
-    AwsSdkInitializer() {
-        Aws::SDKOptions options;
-        Aws::InitAPI(options);
-    }
-    ~AwsSdkInitializer() {
-        Aws::SDKOptions options;
-        Aws::ShutdownAPI(options);
-    }
-} s_aws_sdk_initializer;
 
 // 构造函数
 S3ChunkStore::S3ChunkStore(const std::string& endpoint,
@@ -41,42 +23,28 @@ S3ChunkStore::S3ChunkStore(const std::string& endpoint,
       region_(region.empty() ? "us-east-1" : region),
       use_ssl_(use_ssl)
 {
-    // 创建 AWS S3 客户端配置
-    Aws::Client::ClientConfiguration config;
-    config.region = region_;
-    config.scheme = use_ssl_ ? Aws::Http::Scheme::HTTPS : Aws::Http::Scheme::HTTP;
-    
-    // 设置自定义 endpoint（用于 MinIO 等兼容 S3 的服务）
-    if (!endpoint_.empty()) {
-        // 确保 endpoint 格式正确
-        std::string full_endpoint = endpoint_;
-        if (full_endpoint.find("://") == std::string::npos) {
-            full_endpoint = (use_ssl_ ? "https://" : "http://") + full_endpoint;
-        }
-        config.endpointOverride = full_endpoint;
+    // 构建 endpoint URL
+    std::string full_endpoint = endpoint_;
+    if (full_endpoint.find("://") == std::string::npos) {
+        full_endpoint = (use_ssl_ ? "https://" : "http://") + full_endpoint;
     }
     
-    // 创建凭证
-    Aws::Auth::AWSCredentials credentials(access_key_, secret_key_);
+    // 创建 minio-cpp 客户端
+    minio::s3::BaseUrl base_url(full_endpoint);
+    base_url.https = use_ssl_;
     
-    // 创建 S3 客户端
-    // 使用 path-style 访问（对 MinIO 等兼容服务更友好）
-    client_ = std::make_shared<Aws::S3::S3Client>(
-        credentials,
-        config,
-        Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never,
-        false  // useVirtualAddressing = false，使用 path-style
-    );
+    // 创建凭证提供者（保存为成员变量，确保生命周期）
+    creds_provider_ = std::make_unique<minio::creds::StaticProvider>(access_key_, secret_key_);
+    
+    // 创建客户端（使用成员变量的指针）
+    client_ = std::make_unique<minio::s3::Client>(base_url, creds_provider_.get());
     
     std::fprintf(stderr, "S3ChunkStore: initialized with endpoint=%s, bucket=%s, ssl=%s\n",
                  endpoint_.c_str(), bucket_.c_str(), use_ssl_ ? "true" : "false");
 }
 
 // 析构函数
-S3ChunkStore::~S3ChunkStore()
-{
-    // client_ 会自动销毁
-}
+S3ChunkStore::~S3ChunkStore() = default;
 
 // 确保 bucket 存在
 void S3ChunkStore::ensure_bucket()
@@ -88,36 +56,35 @@ void S3ChunkStore::ensure_bucket()
     }
     
     // 检查 bucket 是否存在
-    Aws::S3::Model::HeadBucketRequest head_request;
-    head_request.SetBucket(bucket_);
+    minio::s3::BucketExistsArgs exists_args;
+    exists_args.bucket = bucket_;
     
-    auto head_outcome = client_->HeadBucket(head_request);
+    minio::s3::BucketExistsResponse exists_resp = client_->BucketExists(exists_args);
     
-    if (!head_outcome.IsSuccess()) {
-        auto error = head_outcome.GetError();
-        std::fprintf(stderr, "S3ChunkStore::ensure_bucket: HeadBucket failed: %s\n",
-                     error.GetMessage().c_str());
-        
-        // 尝试创建 bucket
-        Aws::S3::Model::CreateBucketRequest create_request;
-        create_request.SetBucket(bucket_);
-        
-        // 如果不是 us-east-1，需要设置 LocationConstraint
-        if (region_ != "us-east-1") {
-            Aws::S3::Model::CreateBucketConfiguration bucket_config;
-            bucket_config.SetLocationConstraint(
-                Aws::S3::Model::BucketLocationConstraintMapper::GetBucketLocationConstraintForName(region_));
-            create_request.SetCreateBucketConfiguration(bucket_config);
-        }
-        
-        auto create_outcome = client_->CreateBucket(create_request);
-        if (!create_outcome.IsSuccess()) {
-            std::fprintf(stderr, "S3ChunkStore::ensure_bucket: CreateBucket failed: %s\n",
-                         create_outcome.GetError().GetMessage().c_str());
-        } else {
-            std::fprintf(stderr, "S3ChunkStore::ensure_bucket: created bucket %s\n",
+    if (exists_resp) {
+        if (!exists_resp.exist) {
+            // Bucket 不存在，尝试创建
+            std::fprintf(stderr, "S3ChunkStore::ensure_bucket: bucket %s does not exist, creating...\n",
                          bucket_.c_str());
+            
+            minio::s3::MakeBucketArgs make_args;
+            make_args.bucket = bucket_;
+            if (!region_.empty() && region_ != "us-east-1") {
+                make_args.region = region_;
+            }
+            
+            minio::s3::MakeBucketResponse make_resp = client_->MakeBucket(make_args);
+            if (!make_resp) {
+                std::fprintf(stderr, "S3ChunkStore::ensure_bucket: CreateBucket failed: %s\n",
+                             make_resp.Error().String().c_str());
+            } else {
+                std::fprintf(stderr, "S3ChunkStore::ensure_bucket: created bucket %s\n",
+                             bucket_.c_str());
+            }
         }
+    } else {
+        std::fprintf(stderr, "S3ChunkStore::ensure_bucket: BucketExists check failed: %s\n",
+                     exists_resp.Error().String().c_str());
     }
     
     bucket_exists_checked_ = true;
@@ -142,40 +109,69 @@ bool S3ChunkStore::read_chunk(uint64_t stripe_id,
     
     std::string object_key = make_object_key(stripe_id, chunk_id);
     
-    for (int attempt = 0; attempt < S3_MAX_RETRIES; ++attempt) {
+    out.clear();
+    
+    minio::s3::GetObjectArgs args;
+    args.bucket = bucket_;
+    args.object = object_key;
+    
+    // 使用回调函数收集数据
+    std::ostringstream data_stream;
+    args.datafunc = [&data_stream](minio::http::DataFunctionArgs args) -> bool {
+        data_stream.write(args.datachunk.data(), args.datachunk.size());
+        return true;
+    };
+    
+    std::lock_guard<std::mutex> lock(client_mu_);
+    minio::s3::GetObjectResponse resp = client_->GetObject(args);
+    
+    if (resp) {
+        out = data_stream.str();
+        return true;
+    }
+    
+    // 检查是否是 404 Not Found（对象不存在是正常情况，不需要重试或打印错误）
+    // minio-cpp 返回的错误信息可能包含 "404"、"NoSuchKey"、"ResourceNotFound" 等
+    std::string error_code = resp.code;
+    std::string error_msg = resp.Error().String();
+    if (error_code == "NoSuchKey" || error_code == "ResourceNotFound" ||
+        error_msg.find("404") != std::string::npos ||
+        error_msg.find("NoSuchKey") != std::string::npos ||
+        error_msg.find("Not Found") != std::string::npos) {
+        // 对象不存在，静默返回 false（首次启动时这是正常情况）
         out.clear();
+        return false;
+    }
+    
+    // 其他错误才需要重试
+    for (int attempt = 1; attempt < S3_MAX_RETRIES; ++attempt) {
+        std::fprintf(stderr, "S3ChunkStore::read_chunk: %s attempt %d failed: %s\n",
+                     object_key.c_str(), attempt, error_msg.c_str());
         
-        Aws::S3::Model::GetObjectRequest request;
-        request.SetBucket(bucket_);
-        request.SetKey(object_key);
+        out.clear();
+        data_stream.str("");
+        data_stream.clear();
         
-        std::lock_guard<std::mutex> lock(client_mu_);
-        auto outcome = client_->GetObject(request);
+        minio::s3::GetObjectResponse retry_resp = client_->GetObject(args);
         
-        if (outcome.IsSuccess()) {
-            // 读取响应体
-            auto& body = outcome.GetResult().GetBody();
-            std::ostringstream ss;
-            ss << body.rdbuf();
-            out = ss.str();
+        if (retry_resp) {
+            out = data_stream.str();
             return true;
         }
         
-        // 检查是否是 404 Not Found
-        auto error = outcome.GetError();
-        auto error_type = error.GetErrorType();
-        if (error_type == Aws::S3::S3Errors::NO_SUCH_KEY ||
-            error_type == Aws::S3::S3Errors::RESOURCE_NOT_FOUND) {
+        error_code = retry_resp.code;
+        error_msg = retry_resp.Error().String();
+        if (error_code == "NoSuchKey" || error_code == "ResourceNotFound" ||
+            error_msg.find("404") != std::string::npos ||
+            error_msg.find("NoSuchKey") != std::string::npos ||
+            error_msg.find("Not Found") != std::string::npos) {
             out.clear();
             return false;
         }
-        
-        std::fprintf(stderr, "S3ChunkStore::read_chunk: %s attempt %d failed: %s\n",
-                     object_key.c_str(), attempt + 1, error.GetMessage().c_str());
     }
     
-    std::fprintf(stderr, "S3ChunkStore::read_chunk: %s failed after %d retries\n",
-                 object_key.c_str(), S3_MAX_RETRIES);
+    std::fprintf(stderr, "S3ChunkStore::read_chunk: %s failed after %d retries: %s\n",
+                 object_key.c_str(), S3_MAX_RETRIES, error_msg.c_str());
     return false;
 }
 
@@ -189,26 +185,23 @@ bool S3ChunkStore::write_chunk(uint64_t stripe_id,
     std::string object_key = make_object_key(stripe_id, chunk_id);
     
     for (int attempt = 0; attempt < S3_MAX_RETRIES; ++attempt) {
-        Aws::S3::Model::PutObjectRequest request;
-        request.SetBucket(bucket_);
-        request.SetKey(object_key);
-        request.SetContentType("application/octet-stream");
-        
         // 创建输入流
-        auto input_data = Aws::MakeShared<Aws::StringStream>("S3ChunkStore");
-        input_data->write(data.data(), data.size());
-        request.SetBody(input_data);
-        request.SetContentLength(data.size());
+        std::istringstream data_stream(data);
+        
+        minio::s3::PutObjectArgs args(data_stream, static_cast<long>(data.size()), 0);
+        args.bucket = bucket_;
+        args.object = object_key;
+        args.content_type = "application/octet-stream";
         
         std::lock_guard<std::mutex> lock(client_mu_);
-        auto outcome = client_->PutObject(request);
+        minio::s3::PutObjectResponse resp = client_->PutObject(args);
         
-        if (outcome.IsSuccess()) {
+        if (resp) {
             return true;
         }
         
         std::fprintf(stderr, "S3ChunkStore::write_chunk: %s attempt %d failed: %s\n",
-                     object_key.c_str(), attempt + 1, outcome.GetError().GetMessage().c_str());
+                     object_key.c_str(), attempt + 1, resp.Error().String().c_str());
     }
     
     std::fprintf(stderr, "S3ChunkStore::write_chunk: %s failed after %d retries\n",
@@ -224,27 +217,25 @@ bool S3ChunkStore::delete_chunk(uint64_t stripe_id, uint32_t chunk_id)
     std::string object_key = make_object_key(stripe_id, chunk_id);
     
     for (int attempt = 0; attempt < S3_MAX_RETRIES; ++attempt) {
-        Aws::S3::Model::DeleteObjectRequest request;
-        request.SetBucket(bucket_);
-        request.SetKey(object_key);
+        minio::s3::RemoveObjectArgs args;
+        args.bucket = bucket_;
+        args.object = object_key;
         
         std::lock_guard<std::mutex> lock(client_mu_);
-        auto outcome = client_->DeleteObject(request);
+        minio::s3::RemoveObjectResponse resp = client_->RemoveObject(args);
         
-        if (outcome.IsSuccess()) {
+        if (resp) {
             return true;
         }
         
         // S3 删除不存在的对象通常不报错，但检查一下
-        auto error = outcome.GetError();
-        auto error_type = error.GetErrorType();
-        if (error_type == Aws::S3::S3Errors::NO_SUCH_KEY ||
-            error_type == Aws::S3::S3Errors::RESOURCE_NOT_FOUND) {
+        std::string error_code = resp.code;
+        if (error_code == "NoSuchKey" || error_code == "ResourceNotFound") {
             return true;  // 对象本来就不存在，视为成功
         }
         
         std::fprintf(stderr, "S3ChunkStore::delete_chunk: %s attempt %d failed: %s\n",
-                     object_key.c_str(), attempt + 1, error.GetMessage().c_str());
+                     object_key.c_str(), attempt + 1, resp.Error().String().c_str());
     }
     
     std::fprintf(stderr, "S3ChunkStore::delete_chunk: %s failed after %d retries\n",

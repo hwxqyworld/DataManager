@@ -1,9 +1,9 @@
 #include "raid_chunk_store.h"
 #include <cstdio>
-#include <future>
 #include <cinttypes>
 #include <atomic>
 #include <thread>
+#include <chrono>
 
 // 构造函数
 RAIDChunkStore::RAIDChunkStore(std::vector<std::shared_ptr<ChunkStore>> backends,
@@ -19,7 +19,7 @@ RAIDChunkStore::RAIDChunkStore(std::vector<std::shared_ptr<ChunkStore>> backends
     }
 }
 
-// 写入条带：编码 → 并发写入多个后端
+// 写入条带：编码 → 并发写入多个后端（真正并行，返回时间为最慢后端耗时）
 bool RAIDChunkStore::write_chunk(uint64_t stripe_id,
                                  uint32_t chunk_id,
                                  const std::string &data)
@@ -39,20 +39,58 @@ bool RAIDChunkStore::write_chunk(uint64_t stripe_id,
         return false;
     }
 
-    // 2. 并发写入
-    std::vector<std::future<bool>> tasks;
-    tasks.reserve(k + m);
+    // 2. 准备统计
+    std::vector<BackendStats> backend_stats(k + m);
+    std::vector<bool> results(k + m, false);
+    
+    auto overall_start = std::chrono::steady_clock::now();
+
+    // 3. 并发写入（使用 std::thread 真正并行）
+    std::vector<std::thread> threads;
+    threads.reserve(k + m);
 
     for (int i = 0; i < k + m; i++) {
-        tasks.push_back(std::async(std::launch::async, [&, i]() {
-            return backends[i]->write_chunk(stripe_id, (uint32_t)i, chunks[i]);
-        }));
+        threads.emplace_back([this, &chunks, &backend_stats, &results, stripe_id, i]() {
+            auto start = std::chrono::steady_clock::now();
+            bool ok = backends[i]->write_chunk(stripe_id, (uint32_t)i, chunks[i]);
+            auto end = std::chrono::steady_clock::now();
+            
+            double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+            
+            backend_stats[i].backend_id = i;
+            backend_stats[i].elapsed_ms = elapsed;
+            backend_stats[i].success = ok;
+            results[i] = ok;
+        });
     }
 
-    // 3. 等待结果
+    // 4. 等待所有线程完成
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    auto overall_end = std::chrono::steady_clock::now();
+    double total_elapsed = std::chrono::duration<double, std::milli>(overall_end - overall_start).count();
+
+    // 5. 更新统计
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        last_write_stats_.total_elapsed_ms = total_elapsed;
+        last_write_stats_.backends = std::move(backend_stats);
+    }
+
+    // 6. 打印统计信息
+    fprintf(stderr, "RAIDChunkStore::write_chunk stripe=%" PRIu64 " 总耗时=%.2fms (各后端并行)\n", 
+            stripe_id, total_elapsed);
+    for (const auto &s : last_write_stats_.backends) {
+        fprintf(stderr, "  后端[%d]: %.2fms %s\n", 
+                s.backend_id, s.elapsed_ms, s.success ? "成功" : "失败");
+    }
+
+    // 7. 检查结果
     bool ok = true;
-    for (auto &t : tasks) {
-        if (!t.get()) ok = false;
+    for (int i = 0; i < k + m; i++) {
+        if (!results[i]) ok = false;
     }
 
     if (!ok) {
@@ -76,20 +114,20 @@ void RAIDChunkStore::repair_missing_chunks(uint64_t stripe_id,
     }
     if ((int)chunks.size() != k + m) return;
 
-    std::vector<std::future<bool>> tasks;
+    std::vector<std::thread> threads;
 
     for (int i = 0; i < k + m; i++) {
         if (!present[i]) {
-            tasks.push_back(std::async(std::launch::async, [&, i]() {
+            threads.emplace_back([this, &chunks, stripe_id, i]() {
                 fprintf(stderr, "RAIDChunkStore: 修复 stripe %lu 的 chunk %d\n",
                         (unsigned long)stripe_id, i);
-                return backends[i]->write_chunk(stripe_id, (uint32_t)i, chunks[i]);
-            }));
+                backends[i]->write_chunk(stripe_id, (uint32_t)i, chunks[i]);
+            });
         }
     }
 
-    for (auto &t : tasks) {
-        (void)t.get(); // 这里修复失败也不影响 read 返回的数据
+    for (auto &t : threads) {
+        t.join();
     }
 }
 
@@ -106,24 +144,57 @@ bool RAIDChunkStore::read_chunk(uint64_t stripe_id,
     std::vector<bool> present(k + m, false);
     std::atomic<int> ok_count{0};
 
-    // 并发读取所有 chunk
-    std::vector<std::future<void>> tasks;
-    tasks.reserve(k + m);
+    // 准备统计
+    std::vector<BackendStats> backend_stats(k + m);
+    
+    auto overall_start = std::chrono::steady_clock::now();
+
+    // 并发读取所有 chunk（使用 std::thread 真正并行）
+    std::vector<std::thread> threads;
+    threads.reserve(k + m);
 
     for (int i = 0; i < k + m; i++) {
-        tasks.push_back(std::async(std::launch::async, [this, &chunks, &present, &ok_count, stripe_id, i]() {
+        threads.emplace_back([this, &chunks, &present, &ok_count, &backend_stats, stripe_id, i]() {
+            auto start = std::chrono::steady_clock::now();
             std::string buf;
-            if (backends[i]->read_chunk(stripe_id, (uint32_t)i, buf) && !buf.empty()) {
+            bool ok = backends[i]->read_chunk(stripe_id, (uint32_t)i, buf) && !buf.empty();
+            auto end = std::chrono::steady_clock::now();
+            
+            double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+            
+            backend_stats[i].backend_id = i;
+            backend_stats[i].elapsed_ms = elapsed;
+            backend_stats[i].success = ok;
+            
+            if (ok) {
                 chunks[i] = std::move(buf);
                 present[i] = true;
                 ok_count.fetch_add(1, std::memory_order_relaxed);
             }
-        }));
+        });
     }
 
     // 等待所有读取完成
-    for (auto &t : tasks) {
-        t.get();
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    auto overall_end = std::chrono::steady_clock::now();
+    double total_elapsed = std::chrono::duration<double, std::milli>(overall_end - overall_start).count();
+
+    // 更新统计
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        last_read_stats_.total_elapsed_ms = total_elapsed;
+        last_read_stats_.backends = std::move(backend_stats);
+    }
+
+    // 打印统计信息
+    fprintf(stderr, "RAIDChunkStore::read_chunk stripe=%" PRIu64 " 总耗时=%.2fms (各后端并行)\n", 
+            stripe_id, total_elapsed);
+    for (const auto &s : last_read_stats_.backends) {
+        fprintf(stderr, "  后端[%d]: %.2fms %s\n", 
+                s.backend_id, s.elapsed_ms, s.success ? "成功" : "失败");
     }
 
     if (ok_count.load() < k) {
@@ -151,18 +222,23 @@ bool RAIDChunkStore::delete_chunk(uint64_t stripe_id,
 {
     (void)chunk_id; // 暂不使用
 
-    std::vector<std::future<bool>> tasks;
-    tasks.reserve(k + m);
+    std::vector<bool> results(k + m, false);
+    std::vector<std::thread> threads;
+    threads.reserve(k + m);
 
     for (int i = 0; i < k + m; i++) {
-        tasks.push_back(std::async(std::launch::async, [this, stripe_id, i]() {
-            return backends[i]->delete_chunk(stripe_id, (uint32_t)i);
-        }));
+        threads.emplace_back([this, &results, stripe_id, i]() {
+            results[i] = backends[i]->delete_chunk(stripe_id, (uint32_t)i);
+        });
+    }
+
+    for (auto &t : threads) {
+        t.join();
     }
 
     bool ok = true;
-    for (auto &t : tasks) {
-        if (!t.get()) ok = false;
+    for (int i = 0; i < k + m; i++) {
+        if (!results[i]) ok = false;
     }
     return ok;
 }
