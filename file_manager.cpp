@@ -4,6 +4,9 @@
 #include <cinttypes>
 #include <iostream>
 
+// 元数据文件路径（与 MetadataManager 中保持一致）
+static constexpr const char* META_PATH = "/.__cloudraidfs_meta";
+
 FileManager::FileManager(std::shared_ptr<RAIDChunkStore> raid_store,
                          std::shared_ptr<MetadataManager> meta_mgr,
                          std::shared_ptr<FileCache> file_cache,
@@ -285,12 +288,19 @@ bool FileManager::read(const std::string &path,
 
 // ------------------------------------------------------------
 // 写入文件（异步模式：写入本地缓存后立即返回）
+// 注意：元数据文件使用同步写入，确保数据一致性
 // ------------------------------------------------------------
 bool FileManager::write(const std::string &path,
                         uint64_t offset,
                         const char *data,
                         size_t size)
 {
+    // 元数据文件使用同步写入，不使用异步缓存
+    // 这样可以确保元数据的一致性，避免程序崩溃时丢失元数据
+    if (path == META_PATH) {
+        return sync_write(path, offset, data, size);
+    }
+
     // 写入时使文件缓存失效
     if (file_cache_) {
         file_cache_->invalidate(path);
