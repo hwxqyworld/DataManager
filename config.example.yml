@@ -29,6 +29,24 @@ chunk_cache:
   # 每次访问会将过期时间往后顺延
   cache_ttl: 60
 
+# 异步上传配置（可选）
+# 启用后，写入操作会先保存到本地缓存，立即返回
+# 后台线程会异步将数据上传到后端存储
+async_upload:
+  # 本地缓存目录，用于暂存待上传数据
+  # 默认: /tmp/cloudraidfs_cache
+  cache_dir: /tmp/cloudraidfs_cache
+  # 后台上传线程数，默认 2
+  worker_threads: 2
+  # 上传失败最大重试次数，默认 3
+  max_retries: 3
+  # 重试间隔（毫秒），默认 1000
+  # 实际间隔 = retry_delay_ms * 重试次数
+  retry_delay_ms: 1000
+  # 最大队列长度，默认 1000
+  # 超过此长度时，写入操作会被阻塞或失败
+  max_queue_size: 1000
+
 # 后端存储配置
 backends:
   backend0:

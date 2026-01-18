@@ -10,6 +10,7 @@
 #include "metadata_manager.h"
 #include "file_cache.h"
 #include "chunk_cache.h"
+#include "async_uploader.h"
 #include "yml_parser.h"
 
 #include <memory>
@@ -19,9 +20,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <csignal>
 
 static std::shared_ptr<FileManager> g_fm;
 static std::shared_ptr<MetadataManager> g_meta;
+static std::shared_ptr<AsyncUploader> g_async_uploader;
 
 // 和 MetadataManager 中保持一致
 static const char* META_PATH = "/.__cloudraidfs_meta";
@@ -474,6 +477,12 @@ static int raidfs_fsync(const char *path, int isdatasync,
     (void)path;
     (void)isdatasync;
     (void)fi;
+    
+    // 可选：等待异步上传完成
+    // 注意：这会阻塞直到所有数据都上传完成
+    // 如果需要更细粒度的控制，可以只等待特定文件的条带
+    // g_fm->flush();
+    
     return 0;
 }
 
@@ -511,6 +520,30 @@ static int raidfs_releasedir(const char *path, struct fuse_file_info *fi)
 }
 
 // ------------------------------------------------------------
+// destroy - FUSE 文件系统卸载时调用
+// ------------------------------------------------------------
+static void raidfs_destroy(void *private_data)
+{
+    (void)private_data;
+    
+    fprintf(stderr, "CloudRaidFS: 正在关闭...\n");
+    
+    // 停止异步上传器（等待队列完成）
+    if (g_async_uploader) {
+        fprintf(stderr, "CloudRaidFS: 等待异步上传完成...\n");
+        g_async_uploader->stop();
+    }
+    
+    // 保存元数据
+    if (g_meta && g_fm) {
+        fprintf(stderr, "CloudRaidFS: 保存元数据...\n");
+        g_meta->save_to_backend(g_fm.get());
+    }
+    
+    fprintf(stderr, "CloudRaidFS: 已关闭\n");
+}
+
+// ------------------------------------------------------------
 // FUSE ops
 // ------------------------------------------------------------
 static struct fuse_operations raidfs_ops = {};
@@ -536,6 +569,7 @@ static void init_ops() {
     raidfs_ops.fsync      = raidfs_fsync;
     raidfs_ops.opendir    = raidfs_opendir;
     raidfs_ops.releasedir = raidfs_releasedir;
+    raidfs_ops.destroy    = raidfs_destroy;
 }
 
 // ------------------------------------------------------------
@@ -615,7 +649,7 @@ int main(int argc, char *argv[])
     auto raid  = std::make_shared<RAIDChunkStore>(backends, k, m, coder);
 
     // ------------------------------------------------------------
-    // 初始化缓存
+    // 初始化文件缓存
     // ------------------------------------------------------------
     CacheConfig cache_config;
     
@@ -678,10 +712,63 @@ int main(int argc, char *argv[])
     auto chunk_cache = std::make_shared<ChunkCache>(chunk_cache_config);
 
     // ------------------------------------------------------------
+    // 初始化异步上传器
+    // ------------------------------------------------------------
+    AsyncUploadConfig async_config;
+    
+    // 从配置文件读取异步上传参数（可选）
+    if (root.map.count("async_upload")) {
+        const auto &async_node = root.map.at("async_upload");
+        
+        // cache_dir: 本地缓存目录
+        if (async_node.map.count("cache_dir")) {
+            async_config.cache_dir = async_node.map.at("cache_dir").value;
+        }
+        
+        // worker_threads: 后台上传线程数，默认 2
+        if (async_node.map.count("worker_threads")) {
+            async_config.worker_threads = 
+                std::stoi(async_node.map.at("worker_threads").value);
+        }
+        
+        // max_retries: 最大重试次数，默认 3
+        if (async_node.map.count("max_retries")) {
+            async_config.max_retries = 
+                std::stoi(async_node.map.at("max_retries").value);
+        }
+        
+        // retry_delay_ms: 重试间隔（毫秒），默认 1000
+        if (async_node.map.count("retry_delay_ms")) {
+            async_config.retry_delay_ms = 
+                std::stoi(async_node.map.at("retry_delay_ms").value);
+        }
+        
+        // max_queue_size: 最大队列长度，默认 1000
+        if (async_node.map.count("max_queue_size")) {
+            async_config.max_queue_size = 
+                std::stoull(async_node.map.at("max_queue_size").value);
+        }
+    }
+    
+    std::fprintf(stderr, "异步上传配置: cache_dir=%s, worker_threads=%d, max_retries=%d, max_queue_size=%llu\n",
+                 async_config.cache_dir.c_str(),
+                 async_config.worker_threads,
+                 async_config.max_retries,
+                 (unsigned long long)async_config.max_queue_size);
+    
+    g_async_uploader = std::make_shared<AsyncUploader>(raid, async_config);
+    
+    // 恢复上次未完成的上传
+    g_async_uploader->recover_pending_uploads();
+    
+    // 启动后台上传线程
+    g_async_uploader->start();
+
+    // ------------------------------------------------------------
     // 初始化元数据与文件管理器
     // ------------------------------------------------------------
     g_meta = std::make_shared<MetadataManager>();
-    g_fm   = std::make_shared<FileManager>(raid, g_meta, file_cache, chunk_cache);
+    g_fm   = std::make_shared<FileManager>(raid, g_meta, file_cache, chunk_cache, g_async_uploader);
 
     // 元数据存储在 CloudRaidFS 内部文件中
     if (!g_meta->load_from_backend(g_fm.get())) {
@@ -733,8 +820,9 @@ int main(int argc, char *argv[])
 
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
 
-    // 退出前保存元数据到 CloudRaidFS
-    g_meta->save_to_backend(g_fm.get());
+    // 注意：raidfs_destroy 会在 fuse_main 返回前被调用
+    // 这里不需要再次保存元数据
+
     fuse_opt_free_args(&args);
 
     return ret;

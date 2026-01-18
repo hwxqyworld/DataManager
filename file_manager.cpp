@@ -7,11 +7,13 @@
 FileManager::FileManager(std::shared_ptr<RAIDChunkStore> raid_store,
                          std::shared_ptr<MetadataManager> meta_mgr,
                          std::shared_ptr<FileCache> file_cache,
-                         std::shared_ptr<ChunkCache> chunk_cache)
+                         std::shared_ptr<ChunkCache> chunk_cache,
+                         std::shared_ptr<AsyncUploader> async_uploader)
     : raid(std::move(raid_store)),
       meta(std::move(meta_mgr)),
       file_cache_(std::move(file_cache)),
-      chunk_cache_(std::move(chunk_cache))
+      chunk_cache_(std::move(chunk_cache)),
+      async_uploader_(std::move(async_uploader))
 {
 }
 
@@ -44,7 +46,7 @@ bool FileManager::truncate(const std::string &path, uint64_t new_size) {
 }
 
 // ------------------------------------------------------------
-// 读取单个 stripe（带 chunk 缓存）
+// 读取单个 stripe（带 chunk 缓存，支持从异步缓存读取）
 // ------------------------------------------------------------
 bool FileManager::read_stripe(uint64_t stripe_id, std::string &out) {
     // 先尝试从 chunk 缓存读取
@@ -55,6 +57,23 @@ bool FileManager::read_stripe(uint64_t stripe_id, std::string &out) {
                 out.resize((size_t)STRIPE_SIZE, 0);
             }
             return true;
+        }
+    }
+
+    // 如果启用了异步上传，检查是否在待上传队列中
+    if (async_uploader_) {
+        if (async_uploader_->is_pending(stripe_id)) {
+            // 从本地缓存读取（因为后端可能还没有这个数据）
+            if (async_uploader_->read_from_cache(stripe_id, out)) {
+                if (out.size() < STRIPE_SIZE) {
+                    out.resize((size_t)STRIPE_SIZE, 0);
+                }
+                // 放入 chunk 缓存
+                if (chunk_cache_) {
+                    chunk_cache_->put(stripe_id, out);
+                }
+                return true;
+            }
         }
     }
 
@@ -79,9 +98,40 @@ bool FileManager::read_stripe(uint64_t stripe_id, std::string &out) {
 }
 
 // ------------------------------------------------------------
-// 写入单个 stripe（同时更新 chunk 缓存）
+// 写入单个 stripe（使用异步上传）
 // ------------------------------------------------------------
 bool FileManager::write_stripe(uint64_t stripe_id, const std::string &data) {
+    // 写入时使 chunk 缓存失效
+    if (chunk_cache_) {
+        chunk_cache_->invalidate(stripe_id);
+    }
+
+    // 如果启用了异步上传，使用异步写入
+    if (async_uploader_) {
+        // 先更新 chunk 缓存（这样读取时可以立即看到新数据）
+        if (chunk_cache_) {
+            chunk_cache_->put(stripe_id, data);
+        }
+        
+        // 异步写入后端
+        return async_uploader_->async_write_stripe(stripe_id, data);
+    }
+
+    // 没有异步上传器，同步写入
+    bool result = raid->write_chunk(stripe_id, 0, data);
+
+    // 写入成功后，更新 chunk 缓存
+    if (result && chunk_cache_) {
+        chunk_cache_->put(stripe_id, data);
+    }
+
+    return result;
+}
+
+// ------------------------------------------------------------
+// 同步写入单个 stripe（直接写入后端）
+// ------------------------------------------------------------
+bool FileManager::sync_write_stripe(uint64_t stripe_id, const std::string &data) {
     // 写入时使 chunk 缓存失效
     if (chunk_cache_) {
         chunk_cache_->invalidate(stripe_id);
@@ -234,7 +284,7 @@ bool FileManager::read(const std::string &path,
 }
 
 // ------------------------------------------------------------
-// 写入文件
+// 写入文件（异步模式：写入本地缓存后立即返回）
 // ------------------------------------------------------------
 bool FileManager::write(const std::string &path,
                         uint64_t offset,
@@ -264,10 +314,10 @@ bool FileManager::write(const std::string &path,
         // 覆盖写入
         std::memcpy(&stripe_data[(size_t)stripe_offset], data, to_write);
 
-        // 写回 RAID（同时更新 chunk 缓存）
+        // 写回（异步模式：写入本地缓存后立即返回）
         if (!write_stripe(stripe_id, stripe_data)) {
             fprintf(stderr,
-                    "FileManager::write: write_chunk 失败, stripe_id=%" PRIu64 "\n",
+                    "FileManager::write: write_stripe 失败, stripe_id=%" PRIu64 "\n",
                     stripe_id);
             return false;
         }
@@ -284,4 +334,66 @@ bool FileManager::write(const std::string &path,
     }
 
     return true;
+}
+
+// ------------------------------------------------------------
+// 同步写入文件（直接写入后端）
+// ------------------------------------------------------------
+bool FileManager::sync_write(const std::string &path,
+                             uint64_t offset,
+                             const char *data,
+                             size_t size)
+{
+    // 写入时使文件缓存失效
+    if (file_cache_) {
+        file_cache_->invalidate(path);
+    }
+
+    uint64_t pos = offset;
+    size_t remaining = size;
+
+    while (remaining > 0) {
+        uint64_t stripe_index = pos / STRIPE_SIZE;
+        uint64_t stripe_offset = pos % STRIPE_SIZE;
+        size_t to_write = std::min<uint64_t>(remaining, STRIPE_SIZE - stripe_offset);
+
+        // 确保 stripe 存在
+        uint64_t stripe_id = ensure_stripe(path, stripe_index);
+
+        // 读取旧 stripe
+        std::string stripe_data;
+        read_stripe(stripe_id, stripe_data);
+
+        // 覆盖写入
+        std::memcpy(&stripe_data[(size_t)stripe_offset], data, to_write);
+
+        // 同步写回
+        if (!sync_write_stripe(stripe_id, stripe_data)) {
+            fprintf(stderr,
+                    "FileManager::sync_write: sync_write_stripe 失败, stripe_id=%" PRIu64 "\n",
+                    stripe_id);
+            return false;
+        }
+
+        pos       += to_write;
+        data      += to_write;
+        remaining -= to_write;
+    }
+
+    // 更新文件大小
+    uint64_t end_pos = offset + size;
+    if (end_pos > meta->get_size(path)) {
+        meta->set_size(path, end_pos);
+    }
+
+    return true;
+}
+
+// ------------------------------------------------------------
+// 刷新所有待上传数据
+// ------------------------------------------------------------
+void FileManager::flush() {
+    if (async_uploader_) {
+        async_uploader_->flush();
+    }
 }
