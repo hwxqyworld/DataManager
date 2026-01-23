@@ -756,7 +756,8 @@ int main(int argc, char *argv[])
                  async_config.max_retries,
                  (unsigned long long)async_config.max_queue_size);
     
-    g_async_uploader = std::make_shared<AsyncUploader>(raid, async_config);
+    // 异步上传器需要直接访问后端和编码器，以便进行分块缓存
+    g_async_uploader = std::make_shared<AsyncUploader>(backends, coder, k, m, async_config);
     
     // 恢复上次未完成的上传
     g_async_uploader->recover_pending_uploads();
