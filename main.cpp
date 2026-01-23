@@ -729,6 +729,11 @@ int main(int argc, char *argv[])
         fuse_argv.data()
     );
 
+    // debug output
+    for (int i = 0; i < args.argc; i++) {
+        std::fprintf(stderr, "FUSE arg[%d]: %s\n", i, args.argv[i]);
+    }
+
     // fuse_opt_parse(&args, NULL, NULL, NULL);
 
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
