@@ -729,7 +729,7 @@ int main(int argc, char *argv[])
         fuse_argv.data()
     );
 
-    fuse_opt_parse(&args, NULL, NULL, NULL);
+    // fuse_opt_parse(&args, NULL, NULL, NULL);
 
     int ret = fuse_main(args.argc, args.argv, &raidfs_ops, nullptr);
 
